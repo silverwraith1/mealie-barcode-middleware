@@ -29,6 +29,10 @@ class BarcodeCache(Base):
     quantity: Mapped[str | None] = mapped_column(String, nullable=True)
     product_type: Mapped[str | None] = mapped_column(String, nullable=True)
     found: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Id of the shopping-list item most recently added to Mealie for this
+    # barcode via a plain note (unknown/unmapped scans). Used to reconcile
+    # that line once the barcode is later linked to an item. Cleared after.
+    shopping_item_id: Mapped[str | None] = mapped_column(String, nullable=True)
     lookup_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

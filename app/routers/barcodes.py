@@ -2,7 +2,7 @@ import json
 import logging
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from app.models import BarcodeCache, BarcodeMapping, Item, Activity, RetryQueue
 from app.services.barcode_lookup import perform_lookup
 from app.services.fuzzy import fuzzy_match
 from app.services.homeassistant import dismiss_notification as ha_dismiss
+from app.services.mealie import reconcile_linked_barcode
 from app.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,7 @@ def barcode_detail(
 @router.post("/barcodes/{barcode:path}/map")
 def barcode_map(
     barcode: str,
+    background_tasks: BackgroundTasks,
     item_id: str = Form(...),
     db: Session = Depends(get_db),
 ):
@@ -152,12 +154,16 @@ def barcode_map(
     _resolve_notifications(barcode, db)
 
     db.commit()
+    # Reconcile the already-added shopping list line (and any queued payload)
+    # in the background — never blocks the redirect.
+    background_tasks.add_task(reconcile_linked_barcode, barcode)
     return RedirectResponse(f"/barcodes/{quote(barcode, safe='')}", status_code=303)
 
 
 @router.post("/barcodes/{barcode:path}/create-and-map")
 def barcode_create_and_map(
     barcode: str,
+    background_tasks: BackgroundTasks,
     name: str = Form(...),
     db: Session = Depends(get_db),
 ):
@@ -181,17 +187,19 @@ def barcode_create_and_map(
     _resolve_notifications(barcode, db)
 
     db.commit()
+    background_tasks.add_task(reconcile_linked_barcode, barcode)
     return RedirectResponse(f"/barcodes/{quote(barcode, safe='')}", status_code=303)
 
 
 @router.post("/barcodes/{barcode:path}/confirm")
-def barcode_confirm(barcode: str, db: Session = Depends(get_db)):
+def barcode_confirm(barcode: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Confirm an auto-mapped barcode."""
     existing = db.get(BarcodeMapping, barcode)
     if existing and existing.mapped_by == "auto":
         existing.mapped_by = "auto_confirmed"
         _resolve_notifications(barcode, db)
         db.commit()
+        background_tasks.add_task(reconcile_linked_barcode, barcode)
     return RedirectResponse(f"/barcodes/{quote(barcode, safe='')}", status_code=303)
 
 

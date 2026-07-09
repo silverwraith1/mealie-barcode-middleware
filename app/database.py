@@ -53,3 +53,9 @@ def _migrate():
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE activities ADD COLUMN is_dismissed BOOLEAN DEFAULT 0"))
                 conn.execute(text("UPDATE activities SET is_dismissed = 1 WHERE is_read = 1"))
+
+    if "barcode_cache" in tables:
+        columns = {c["name"] for c in insp.get_columns("barcode_cache")}
+        if "shopping_item_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE barcode_cache ADD COLUMN shopping_item_id VARCHAR"))

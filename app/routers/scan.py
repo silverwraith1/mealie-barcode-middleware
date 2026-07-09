@@ -17,6 +17,7 @@ from app.services.fuzzy import try_auto_map
 from app.services.mealie import (
     add_to_shopping_list_by_item,
     add_to_shopping_list_by_note,
+    add_shopping_note,
     enqueue_retry,
 )
 from app.services.homeassistant import notify_scan as ha_notify_scan
@@ -149,8 +150,11 @@ def _process_scan(barcode: str, db: Session, background_tasks: BackgroundTasks) 
             # Skip shopping list
             resp = ScanResponse(result="unknown", item=barcode, via=None, paused=paused)
         else:
-            success = add_to_shopping_list_by_note(note)
+            success, item_id = add_shopping_note(note)
             if success:
+                if item_id and cached:
+                    cached.shopping_item_id = item_id
+                    db.commit()
                 resp = ScanResponse(result="unknown", item=barcode, via="note")
             else:
                 _enqueue_note(barcode, note, db)
@@ -198,8 +202,11 @@ def _process_scan(barcode: str, db: Session, background_tasks: BackgroundTasks) 
         _save_activity(barcode, activity_title, note, result_type, db)
         _save_notification(barcode, "Not linked", f"{note} — tap to link to a Mealie item", "needs_mapping", db)
     else:
-        success = add_to_shopping_list_by_note(note)
+        success, item_id = add_shopping_note(note)
         if success:
+            if item_id and cached:
+                cached.shopping_item_id = item_id
+                db.commit()
             resp = ScanResponse(
                 result="added_as_note", item=note, via="note",
                 brand=cached.brand, quantity=cached.quantity,
@@ -312,8 +319,11 @@ def _handle_generic(term: str, barcode: str, db: Session, paused: bool = False) 
         return resp
 
     # Fallback: add as note
-    success = add_to_shopping_list_by_note(term)
+    success, item_id = add_shopping_note(term)
     if success:
+        if item_id and existing:
+            existing.shopping_item_id = item_id
+            db.commit()
         return ScanResponse(result="added_as_note", item=term, via="note")
     else:
         _enqueue_note(barcode, term, db)
