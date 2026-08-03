@@ -50,3 +50,7 @@ _project-input/
 # ESPHome planning/design docs (local only)
 esphome/schematic.md
 esphome/improvement and extension planning.md
+*.db
+*.sqlite
+.env
+.venv/

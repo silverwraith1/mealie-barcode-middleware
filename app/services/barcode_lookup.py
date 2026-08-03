@@ -13,9 +13,68 @@ from app.utils import utcnow
 logger = logging.getLogger(__name__)
 
 
+# ── Provider Implementations ────────────────────────────────────────
+
+def lookup_sparkyfitness(barcode: str) -> dict | None:
+    """Query local SparkyFitness instance using the v2 API route. Returns product dict or None."""
+    if not getattr(settings, "sparkyfitness_enabled", False):
+        return None
+    if not getattr(settings, "sparkyfitness_url_base", None) or not getattr(settings, "sparkyfitness_api_token", None):
+        logger.warning("SparkyFitness enabled but URL base or API token is missing.")
+        return None
+
+    base_url = settings.sparkyfitness_url_base.rstrip("/")
+    url = f"{base_url}/api/v2/foods/barcode/{barcode}"
+    headers = {
+        "Authorization": f"Bearer {settings.sparkyfitness_api_token}",
+        "Accept": "application/json",
+    }
+
+    try:
+        resp = httpx.get(url, headers=headers, timeout=5)
+        logger.info(f"SparkyFitness {barcode}: HTTP {resp.status_code}")
+
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+
+        food = data.get("food")
+        if not food:
+            return None
+
+        name = food.get("name") or ""
+        if not name.strip():
+            return None
+
+        brand = food.get("brand") or ""
+
+        variant = food.get("default_variant") or {}
+        serving_size = variant.get("serving_size")
+        serving_unit = variant.get("serving_unit") or ""
+
+        quantity_str = None
+        if serving_size is not None:
+            quantity_str = f"{serving_size}{serving_unit}".strip()
+
+        return {
+            "title": name.strip(),
+            "brand": brand.strip(),
+            "product_type": None,
+            "quantity": quantity_str,
+            "source": "sparkyfitness",
+        }
+    except httpx.HTTPError as e:
+        logger.error(f"SparkyFitness HTTP error for {barcode}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"SparkyFitness lookup error for {barcode}: {e}")
+        return None
+
+
 def lookup_openfoodfacts(barcode: str) -> dict | None:
     """Query OpenFoodFacts. Returns product dict or None."""
-    if not settings.off_enabled:
+    if not getattr(settings, "off_enabled", True):
         return None
     url = f"{settings.off_url_base}{barcode}.json"
     try:
@@ -46,9 +105,9 @@ def lookup_openfoodfacts(barcode: str) -> dict | None:
 
 def lookup_upcdatabase(barcode: str) -> dict | None:
     """Query UPCDatabase. Returns product dict or None."""
-    if not settings.upcdb_enabled:
+    if not getattr(settings, "upcdb_enabled", False):
         return None
-    if not settings.upcdb_api_key:
+    if not getattr(settings, "upcdb_api_key", None):
         return None
     url = f"{settings.upcdb_url_base}{barcode}"
     try:
@@ -86,27 +145,42 @@ def lookup_upcdatabase(barcode: str) -> dict | None:
         return None
 
 
+# ── Provider Chain Resolution ────────────────────────────────────────
+
 def _get_lookup_functions() -> tuple:
     """Return (primary_fn, secondary_fn) based on LOOKUP_PRIMARY config.
 
-    Each function is the raw lookup callable.  If a source is disabled or
-    missing its API key the corresponding slot is ``None``.
+    Evaluates enabled states for SparkyFitness, Open Food Facts, and UPC Database.
+    If the selected primary source is disabled, falls back to the next available provider.
     """
-    off_fn = lookup_openfoodfacts if settings.off_enabled else None
-    upcdb_fn = (
-        lookup_upcdatabase
-        if settings.upcdb_enabled and settings.upcdb_api_key
-        else None
-    )
+    providers = {
+        "sparkyfitness": (
+            lookup_sparkyfitness
+            if getattr(settings, "sparkyfitness_enabled", False)
+            and getattr(settings, "sparkyfitness_url_base", None)
+            and getattr(settings, "sparkyfitness_api_token", None)
+            else None
+        ),
+        "off": lookup_openfoodfacts if getattr(settings, "off_enabled", True) else None,
+        "upcdb": (
+            lookup_upcdatabase
+            if getattr(settings, "upcdb_enabled", False) and getattr(settings, "upcdb_api_key", None)
+            else None
+        ),
+    }
 
-    if settings.lookup_primary == "upcdb":
-        primary, secondary = upcdb_fn, off_fn
-    else:
-        primary, secondary = off_fn, upcdb_fn
+    primary_key = getattr(settings, "lookup_primary", "sparkyfitness")
+    
+    # Priority list starting with the designated primary
+    order = ["sparkyfitness", "off", "upcdb"]
+    if primary_key in order:
+        order.remove(primary_key)
+        order.insert(0, primary_key)
 
-    # If the chosen primary is unavailable, swap.
-    if primary is None:
-        primary, secondary = secondary, None
+    available = [providers[k] for k in order if providers[k] is not None]
+
+    primary = available[0] if len(available) > 0 else None
+    secondary = available[1] if len(available) > 1 else None
 
     return primary, secondary
 
@@ -131,20 +205,17 @@ def _merge_gaps(base: dict, supplement: dict) -> bool:
     return changed
 
 
+# ── Primary Lookup & Caching Engine ─────────────────────────────────
+
 def perform_lookup(barcode: str, db: Session) -> BarcodeCache:
     """Lookup barcode in external APIs and upsert into barcode_cache.
 
     Strategy (``LOOKUP_STRATEGY``):
-    * ``failover`` — try primary, use secondary only if primary returns
-      nothing.  (Default, current behaviour.)
+    * ``failover`` — try primary, use secondary only if primary returns nothing.
     * ``complement`` — try primary, respond with whatever it gives, then
       (optionally in background) fill gaps from the secondary.
       When ``LOOKUP_ENRICH_IN_BACKGROUND`` is *False* the secondary call
       is made synchronously before returning.
-
-    Returns the cache row.  When complement+background mode is active the
-    caller is expected to schedule ``enrich_barcode_background()`` *after*
-    sending the HTTP response.
     """
     primary_fn, secondary_fn = _get_lookup_functions()
 
@@ -153,22 +224,21 @@ def perform_lookup(barcode: str, db: Session) -> BarcodeCache:
         result = primary_fn(barcode)
 
     if not result:
-        # Primary returned nothing — always try secondary as full fallback
-        # regardless of strategy (we need *something*).
+        # Primary returned nothing — try secondary as full fallback
         if secondary_fn:
             result = secondary_fn(barcode)
     elif (
-        settings.lookup_strategy == "complement"
-        and not settings.lookup_enrich_in_background
+        getattr(settings, "lookup_strategy", "failover") == "complement"
+        and not getattr(settings, "lookup_enrich_in_background", True)
         and secondary_fn
         and _result_has_gaps(result)
     ):
-        # Complement mode, synchronous: fill gaps right now.
+        # Complement mode, synchronous: fill gaps immediately
         supplement = secondary_fn(barcode)
         if supplement:
             _merge_gaps(result, supplement)
 
-    # --- upsert cache ---
+    # --- Upsert Cache ---
     existing = db.get(BarcodeCache, barcode)
     now = utcnow()
 
@@ -216,10 +286,10 @@ def perform_lookup(barcode: str, db: Session) -> BarcodeCache:
 
 def needs_background_enrich(cached: BarcodeCache) -> bool:
     """Return True if a background enrichment call should be scheduled."""
-    if settings.lookup_strategy != "complement":
+    if getattr(settings, "lookup_strategy", "failover") != "complement":
         return False
-    if not settings.lookup_enrich_in_background:
-        return False  # already done synchronously
+    if not getattr(settings, "lookup_enrich_in_background", True):
+        return False  # Already processed synchronously
     if not cached.found:
         return False
     _, secondary_fn = _get_lookup_functions()

@@ -11,14 +11,23 @@ class Settings(BaseSettings):
     mealie_api_key: str
     mealie_shopping_list_id: str
 
+    # SparkyFitness settings
+    sparkyfitness_enabled: bool = False
+    sparkyfitness_url_base: str | None = None
+    sparkyfitness_api_token: str | None = None
+
+    # Open Food Facts settings
     off_enabled: bool = True
     off_url_base: str = "https://world.openfoodfacts.org/api/v2/product/"
+
+    # UPC Database settings
     upcdb_enabled: bool = False
     upcdb_url_base: str = "https://api.upcdatabase.org/product/"
     upcdb_api_key: str | None = None
 
-    lookup_strategy: str = "failover"   # failover | complement
-    lookup_primary: str = "off"          # off | upcdb
+    # Lookup settings
+    lookup_strategy: str = "failover"          # failover | complement
+    lookup_primary: str = "sparkyfitness"      # sparkyfitness | off | upcdb
     lookup_enrich_in_background: bool = True  # complement: secondary call after response
 
     item_sync_interval_hours: int = 6
@@ -47,6 +56,14 @@ class Settings(BaseSettings):
 
 EDITABLE_SETTINGS: dict[str, dict[str, Any]] = {
     # Barcode Lookup Sources
+    "sparkyfitness_enabled": {
+        "type": "bool",
+        "label": "SPARKYFITNESS_ENABLED",
+        "description": "Enabled",
+        "help": "Local SparkyFitness instance food database.",
+        "group": "Barcode Lookup Sources",
+        "section": "SparkyFitness",
+    },
     "off_enabled": {
         "type": "bool",
         "label": "OFF_ENABLED",
@@ -67,8 +84,12 @@ EDITABLE_SETTINGS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "label": "LOOKUP_PRIMARY",
         "description": "Primary source",
-        "help": "Which API is queried first. The other becomes the fallback or complement source.",
-        "choices": [("off", "Open Food Facts"), ("upcdb", "UPC Database")],
+        "help": "Which API is queried first. The secondary becomes the fallback or complement source.",
+        "choices": [
+            ("sparkyfitness", "SparkyFitness"),
+            ("off", "Open Food Facts"),
+            ("upcdb", "UPC Database"),
+        ],
         "group": "Barcode Lookup Sources",
         "section": "Strategy",
     },
@@ -95,7 +116,7 @@ EDITABLE_SETTINGS: dict[str, dict[str, Any]] = {
         "type": "int",
         "label": "FUZZY_MATCH_THRESHOLD",
         "description": "Match threshold",
-        "help": "Minimum score (0\u2013100) for a barcode title to be auto-linked to a Mealie item.",
+        "help": "Minimum score (0–100) for a barcode title to be auto-linked to a Mealie item.",
         "min": 0,
         "max": 100,
         "group": "Matching & Sync",
@@ -147,7 +168,7 @@ EDITABLE_SETTINGS: dict[str, dict[str, Any]] = {
         "description": "Unknown barcode behavior",
         "help": "Controls what happens when a scanned barcode can't be linked to a Mealie item. "
                 "'Add to list & notify' adds a note to your shopping list and sends a notification. "
-                "'Notify only' skips the shopping list \u2014 unmapped barcodes appear on the Barcodes page for linking later.",
+                "'Notify only' skips the shopping list — unmapped barcodes appear on the Barcodes page for linking later.",
         "choices": [("add_to_list", "Add to list & notify"), ("notify_only", "Notify only")],
         "group": "Scanning",
         "section": "Unknown & Unlinked Barcodes",
@@ -214,6 +235,19 @@ READONLY_SETTINGS: dict[str, dict[str, Any]] = {
         "group": "Mealie Connection",
         "section": "",
     },
+    "sparkyfitness_url_base": {
+        "label": "SPARKYFITNESS_URL_BASE",
+        "description": "Base URL",
+        "group": "Barcode Lookup Sources",
+        "section": "SparkyFitness",
+    },
+    "sparkyfitness_api_token": {
+        "label": "SPARKYFITNESS_API_TOKEN",
+        "description": "API Token",
+        "group": "Barcode Lookup Sources",
+        "section": "SparkyFitness",
+        "secret": True,
+    },
     "off_url_base": {
         "label": "OFF_URL_BASE",
         "description": "API endpoint",
@@ -242,7 +276,7 @@ READONLY_SETTINGS: dict[str, dict[str, Any]] = {
     "session_max_age_days": {
         "label": "SESSION_MAX_AGE_DAYS",
         "description": "Login session duration (days)",
-        "help": "How long users stay logged in when \u201cStay signed in\u201d is checked. Without it, the session expires when the browser closes.",
+        "help": "How long users stay logged in when “Stay signed in” is checked. Without it, the session expires when the browser closes.",
         "group": "System",
         "section": "Infrastructure",
     },
@@ -386,7 +420,11 @@ class SettingsManager:
                 v = min(meta["max"], v)
             return v
         if field_type == "choice":
-            if raw not in meta["choices"]:
+            # For choices, extract keys if choices are defined as (key, label) tuples
+            valid_keys = [
+                c[0] if isinstance(c, tuple) else c for c in meta["choices"]
+            ]
+            if raw not in valid_keys:
                 raise ValueError(f"Invalid choice '{raw}' for {key}")
             return raw
         return raw  # str
