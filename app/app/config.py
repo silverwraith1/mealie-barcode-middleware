@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     lookup_enrich_in_background: bool = True  # complement: secondary call after response
 
     item_sync_interval_hours: int = 6
+    fuzzy_match_enabled: bool = True
     fuzzy_match_threshold: int = 85
     fuzzy_ambiguity_gap: int = 10
     lookup_ttl_days: int = 30
@@ -112,6 +113,14 @@ EDITABLE_SETTINGS: dict[str, dict[str, Any]] = {
         "section": "Strategy",
     },
     # Matching & Sync
+    "fuzzy_match_enabled": {
+        "type": "bool",
+        "label": "FUZZY_MATCH_ENABLED",
+        "description": "Enable Fuzzy Matching",
+        "help": "When enabled, attempts to match scanned product titles against existing Mealie items. When disabled, scanned items bypass matching and add directly as plain notes.",
+        "group": "Matching & Sync",
+        "section": "Fuzzy Matching",
+    },
     "fuzzy_match_threshold": {
         "type": "int",
         "label": "FUZZY_MATCH_THRESHOLD",

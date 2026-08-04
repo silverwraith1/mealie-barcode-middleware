@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import BarcodeCache, BarcodeMapping, Item, Activity, RetryQueue
+from app.models import Activity, BarcodeCache, BarcodeMapping, Item, RetryQueue
 from app.services.barcode_lookup import perform_lookup
 from app.services.fuzzy import fuzzy_match
 from app.services.homeassistant import dismiss_notification as ha_dismiss
@@ -24,7 +24,7 @@ def _mark_notifications_read(barcode: str, db: Session):
     """Mark web notifications as read (viewing only — does NOT clear HA phone notification)."""
     db.query(Activity).filter(
         Activity.barcode == barcode,
-        Activity.is_read == False,
+        Activity.is_read == False,  # noqa: E712
     ).update({"is_read": True})
 
 
@@ -48,13 +48,13 @@ def barcodes_list(
     elif status == "pending":
         mapped_barcodes = db.query(BarcodeMapping.barcode).subquery()
         query = query.filter(
-            BarcodeCache.found == True,
+            BarcodeCache.found == True,  # noqa: E712
             ~BarcodeCache.barcode.in_(mapped_barcodes),
         )
     elif status == "unknown":
         mapped_barcodes = db.query(BarcodeMapping.barcode).subquery()
         query = query.filter(
-            BarcodeCache.found == False,
+            BarcodeCache.found == False,  # noqa: E712
             ~BarcodeCache.barcode.in_(mapped_barcodes),
         )
 
@@ -64,7 +64,11 @@ def barcodes_list(
     mappings = {m.barcode: m for m in db.query(BarcodeMapping).all()}
     queued_barcodes = set(r.barcode for r in db.query(RetryQueue).all())
     item_ids = [m.item_id for m in mappings.values()]
-    items_map = {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()} if item_ids else {}
+    items_map = (
+        {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
+        if item_ids
+        else {}
+    )
 
     items = []
     for bc in barcodes:
@@ -105,16 +109,16 @@ def barcode_detail(
     _mark_notifications_read(barcode, db)
     db.commit()
 
-    # Get fuzzy candidates
+    # Get fuzzy candidates if fuzzy matching is enabled
     candidates = []
-    if cached and cached.title:
+    if settings.fuzzy_match_enabled and cached and cached.title:
         candidates = fuzzy_match(cached.title, cached.brand, db)[:10]
 
     # Find next unmapped barcode
     mapped_barcodes = [m.barcode for m in db.query(BarcodeMapping).all()]
     next_unmapped = (
         db.query(BarcodeCache)
-        .filter(BarcodeCache.found == True, ~BarcodeCache.barcode.in_(mapped_barcodes))
+        .filter(BarcodeCache.found == True, ~BarcodeCache.barcode.in_(mapped_barcodes))  # noqa: E712
         .filter(BarcodeCache.barcode != barcode)
         .order_by(BarcodeCache.created_at.desc())
         .first()
@@ -133,6 +137,7 @@ def barcode_detail(
         "candidates": candidates,
         "next_unmapped": next_unmapped,
         "threshold": settings.fuzzy_match_threshold,
+        "fuzzy_enabled": settings.fuzzy_match_enabled,
     })
 
 
@@ -192,7 +197,11 @@ def barcode_create_and_map(
 
 
 @router.post("/barcodes/{barcode:path}/confirm")
-def barcode_confirm(barcode: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def barcode_confirm(
+    barcode: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     """Confirm an auto-mapped barcode."""
     existing = db.get(BarcodeMapping, barcode)
     if existing and existing.mapped_by == "auto":
@@ -260,13 +269,13 @@ def barcodes_api(status: str = "all", db: Session = Depends(get_db)):
     elif status == "pending":
         mapped_sub = db.query(BarcodeMapping.barcode).subquery()
         query = query.filter(
-            BarcodeCache.found == True,
+            BarcodeCache.found == True,  # noqa: E712
             ~BarcodeCache.barcode.in_(mapped_sub),
         )
     elif status == "unknown":
         mapped_sub = db.query(BarcodeMapping.barcode).subquery()
         query = query.filter(
-            BarcodeCache.found == False,
+            BarcodeCache.found == False,  # noqa: E712
             ~BarcodeCache.barcode.in_(mapped_sub),
         )
 
@@ -277,7 +286,8 @@ def barcodes_api(status: str = "all", db: Session = Depends(get_db)):
     item_ids = [m.item_id for m in mappings.values()]
     items_map = (
         {i.id: i for i in db.query(Item).filter(Item.id.in_(item_ids)).all()}
-        if item_ids else {}
+        if item_ids
+        else {}
     )
 
     result_items = []

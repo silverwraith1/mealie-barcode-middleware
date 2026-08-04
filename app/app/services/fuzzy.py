@@ -33,8 +33,8 @@ def normalise_title(title: str, brand: str | None = None) -> str:
 
 
 def _score_pair(product: str, item_term: str) -> int:
-    """
-    Score a normalised product title against a single item name/alias.
+    """Score a normalised product title against a single item name/alias.
+
     Uses max of token_sort_ratio, token_set_ratio, and partial_ratio
     for best coverage across languages and partial matches.
     """
@@ -53,8 +53,8 @@ def fuzzy_match(
     db: Session,
     threshold: int | None = None,
 ) -> list[dict]:
-    """
-    Score normalised title against all items.
+    """Score normalised title against all items.
+
     Returns list of candidates sorted by score descending.
     Each entry: {"item_id": str, "item_name": str, "score": int, "source": str}
     """
@@ -82,27 +82,37 @@ def fuzzy_match(
             alias_score = _score_pair(normalised, alias)
             score = max(score, alias_score)
 
-        candidates.append({
-            "item_id": item.id,
-            "item_name": item.name,
-            "source": item.source,
-            "score": int(score),
-        })
+        candidates.append(
+            {
+                "item_id": item.id,
+                "item_name": item.name,
+                "source": item.source,
+                "score": int(score),
+            }
+        )
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
     return candidates
 
 
-def try_auto_map(barcode: str, title: str, brand: str | None, db: Session) -> str | None:
-    """
-    Attempt fuzzy auto-mapping.
+def try_auto_map(
+    barcode: str, title: str, brand: str | None, db: Session
+) -> str | None:
+    """Attempt fuzzy auto-mapping.
+
     Only maps if:
-      1. Top score >= threshold
-      2. Gap between #1 and #2 >= ambiguity_gap (avoids false matches when
+      1. Fuzzy matching is enabled in settings
+      2. Top score >= threshold
+      3. Gap between #1 and #2 >= ambiguity_gap (avoids false matches when
          multiple items match equally, e.g. "Tuna" and "Water" both appearing
          in "Chunk Light Tuna in Water")
+
     Returns item_id on success, None otherwise.
     """
+    if not settings.fuzzy_match_enabled:
+        logger.debug("Fuzzy matching is disabled in settings; skipping auto-map for %s", barcode)
+        return None
+
     candidates = fuzzy_match(title, brand, db)
     if not candidates:
         return None
@@ -117,9 +127,14 @@ def try_auto_map(barcode: str, title: str, brand: str | None, db: Session) -> st
         gap = top["score"] - second["score"]
         if gap < settings.fuzzy_ambiguity_gap:
             logger.info(
-                f"Ambiguous match for {barcode}: "
-                f"{top['item_name']}({top['score']}) vs "
-                f"{second['item_name']}({second['score']}), gap={gap} < {settings.fuzzy_ambiguity_gap}"
+                "Ambiguous match for %s: %s(%d) vs %s(%d), gap=%d < %d",
+                barcode,
+                top["item_name"],
+                top["score"],
+                second["item_name"],
+                second["score"],
+                gap,
+                settings.fuzzy_ambiguity_gap,
             )
             return None
 
@@ -129,11 +144,13 @@ def try_auto_map(barcode: str, title: str, brand: str | None, db: Session) -> st
         existing.item_id = top["item_id"]
         existing.mapped_by = "auto"
     else:
-        db.add(BarcodeMapping(
-            barcode=barcode,
-            item_id=top["item_id"],
-            mapped_by="auto",
-        ))
+        db.add(
+            BarcodeMapping(
+                barcode=barcode,
+                item_id=top["item_id"],
+                mapped_by="auto",
+            )
+        )
     db.commit()
-    logger.info(f"Auto-mapped {barcode} → {top['item_name']} (score={top['score']})")
+    logger.info("Auto-mapped %s → %s (score=%d)", barcode, top["item_name"], top["score"])
     return top["item_id"]
