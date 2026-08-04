@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Docker Compose (user's real config — only .example is tracked)
+docker-compose.yml
+docker-compose.yaml
+!docker-compose.yml.example
+
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# Docker
+middleware-data/
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Project input (planning docs, reference code)
+_project-input/
+
+# ESPHome planning/design docs (local only)
+esphome/schematic.md
+esphome/improvement and extension planning.md
+*.db
+*.sqlite
+.env
+.venv/

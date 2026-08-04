@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Activity — Mealie Barcode Middleware{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+    <div class="row g-2 align-items-center">
+        <div class="col">
+            <h2 class="page-title">Activity</h2>
+        </div>
+        <div class="col-auto">
+            <form method="post" action="/activities/mark-all-read" class="d-inline">
+                <button type="submit" class="btn btn-secondary">
+                    <i class="ti ti-checks icon"></i>Mark all read
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Filter tabs + card -->
+<div class="card-tabs">
+    <ul class="nav nav-tabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'all' }}" href="/activities?result=all">All</a>
+        </li>
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'unread' }}" href="/activities?result=unread">Unread</a>
+        </li>
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'added' }}" href="/activities?result=added">Added</a>
+        </li>
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'needs_mapping' }}" href="/activities?result=needs_mapping">Not Linked</a>
+        </li>
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'auto_mapped' }}" href="/activities?result=auto_mapped">Auto-linked</a>
+        </li>
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'unknown' }}" href="/activities?result=unknown">Unknown</a>
+        </li>
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'broken' }}" href="/activities?result=broken">Broken</a>
+        </li>
+        <li class="nav-item" role="presentation">
+            <a class="nav-link {{ 'active' if current_filter == 'retry_failed' }}" href="/activities?result=retry_failed">Failed</a>
+        </li>
+    </ul>
+    <div class="tab-content">
+        <div class="card active show" role="tabpanel">
+    <div class="card-header">
+        <div class="row w-100">
+            <div class="col">
+                <h3 class="card-title mb-0">{{ activities|length }} event{{ 's' if activities|length != 1 }}</h3>
+                <p class="text-secondary small mb-0 mt-1">
+                    {% if current_filter == 'unread' %}
+                    Unread notifications — items that may need your attention.
+                    {% elif current_filter == 'added' %}
+                    Items successfully added to the shopping list or queued for retry.
+                    {% elif current_filter == 'needs_mapping' %}
+                    Found in product database but not linked to a Mealie item yet.
+                    {% elif current_filter == 'auto_mapped' %}
+                    Automatically linked via fuzzy matching — review recommended.
+                    {% elif current_filter == 'unknown' %}
+                    Not found in any product database.
+                    {% elif current_filter == 'broken' %}
+                    Linked item was deleted in Mealie — needs relinking.
+                    {% elif current_filter == 'retry_failed' %}
+                    Could not reach Mealie after retries — check connectivity.
+                    {% else %}
+                    All scan events and notifications, newest first.
+                    {% endif %}
+                </p>
+            </div>
+            <div class="col-md-auto col-sm-12">
+                <div class="input-group input-group-flat w-auto">
+                    <span class="input-group-text">
+                        <i class="ti ti-search icon icon-1" aria-hidden="true"></i>
+                    </span>
+                    <input id="activity-table-search" type="text" class="form-control" placeholder="Filter…" autocomplete="off">
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-vcenter card-table table-hover" id="activity-table">
+            <thead>
+                <tr>
+                    <th>
+                        <button class="table-sort d-flex justify-content-between" data-sort="sort-status">Status</button>
+                    </th>
+                    <th>
+                        <button class="table-sort d-flex justify-content-between" data-sort="sort-barcode">Barcode</button>
+                    </th>
+                    <th>
+                        <button class="table-sort d-flex justify-content-between" data-sort="sort-title">Title</button>
+                    </th>
+                    <th>
+                        <button class="table-sort d-flex justify-content-between" data-sort="sort-message">Message</button>
+                    </th>
+                    <th>
+                        <button class="table-sort d-flex justify-content-between active desc" data-sort="sort-time">Time</button>
+                    </th>
+                </tr>
+            </thead>
+            <tbody class="table-tbody" id="activity-tbody">
+                {% for n in activities %}
+                <tr class="cursor-pointer {{ '' if n.is_read else 'table-active' }}" data-href="/barcodes/{{ n.barcode|urlencode }}">
+                    <td class="sort-status">
+                        {% if n.result == 'retry_failed' or n.result == 'broken' %}
+                        <span class="badge bg-red text-red-fg">{{ n.result | replace('_', ' ') | title }}</span>
+                        {% elif n.result == 'unknown' %}
+                        <span class="badge bg-red text-red-fg">Unknown</span>
+                        {% elif n.result == 'needs_mapping' %}
+                        <span class="badge bg-yellow text-yellow-fg">Not Linked</span>
+                        {% elif n.result == 'auto_mapped' %}
+                        <span class="badge bg-azure text-azure-fg">Auto-linked</span>
+                        {% elif n.result == 'added' or n.result == 'added_as_note' %}
+                        <span class="badge bg-green text-green-fg">Added</span>
+                        {% elif n.result == 'queued' %}
+                        <span class="badge bg-purple text-purple-fg">Queued</span>
+                        {% else %}
+                        <span class="badge bg-secondary">{{ n.result | replace('_', ' ') | title }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="sort-barcode">{{ n.barcode }}</td>
+                    <td class="sort-title">{{ n.title }}</td>
+                    <td class="sort-message text-secondary text-truncate col-message">{{ n.message }}</td>
+                    <td class="sort-time text-secondary text-nowrap">{{ n.created_at | localtime }}</td>
+                </tr>
+                {% else %}
+                <tr class="activity-empty-row">
+                    <td colspan="5">
+                        <div class="empty py-4">
+                            <div class="empty-icon"><i class="ti ti-activity icon icon-lg"></i></div>
+                            <p class="empty-title">No activity yet</p>
+                            <p class="empty-subtitle text-secondary">
+                                Scan events and notifications will appear here as you use the scanner.
+                            </p>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <div class="card-footer d-flex align-items-center">
+        <div class="dropdown">
+            <a class="btn dropdown-toggle" data-bs-toggle="dropdown">
+                <span id="activity-page-size-label">25</span>&nbsp;records
+            </a>
+            <div class="dropdown-menu">
+                <a class="dropdown-item" href="#" data-page-size="10">10 records</a>
+                <a class="dropdown-item" href="#" data-page-size="25">25 records</a>
+                <a class="dropdown-item" href="#" data-page-size="50">50 records</a>
+                <a class="dropdown-item" href="#" data-page-size="100">100 records</a>
+            </div>
+        </div>
+        <ul class="pagination m-0 ms-auto" id="activity-pagination"></ul>
+    </div>
+    </div>{# /card tabpanel #}
+    </div>{# /tab-content #}
+</div>{# /card-tabs #}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/table.js?v={{ v }}"></script>
+<script src="/static/js/activity-page.js?v={{ v }}"></script>
+{% endblock %}

@@ -1,0 +1,117 @@
+# Barcode Scanner — HA Notification Automation
+#
+# Sends a phone notification when a scanned barcode needs attention
+# (unknown product, auto-linked item needing review, etc.).
+# The notification includes an actionable button that opens the
+# middleware's barcode detail page for review.
+#
+# This automation is triggered by a webhook from the middleware.
+# All scan sources (ESP32 DIY scanner, BinaryEye, iOS Shortcuts)
+# generate the same notification — the middleware handles it centrally.
+#
+# Setup:
+#   1. In HA, go to Settings → Automations → Create Automation → YAML mode
+#      and paste this file (or copy it to config/automations/).
+#   2. Note the webhook ID below ("barcode-scanner") — you'll need it
+#      for the middleware's HA_WEBHOOK_URL setting.
+#   3. Replace notify.mobile_app_YOUR_PHONE (line 65) with your
+#      HA Companion App notify service (find it in HA → Developer Tools → Services).
+#   4. In the middleware, set:
+#        HA_WEBHOOK_URL=http://homeassistant.local:8123/api/webhook/barcode-scanner
+#        MIDDLEWARE_BASE_URL=http://your-middleware-ip:9930
+#
+# The webhook ID can be anything you like — just make sure it matches
+# the URL you set in HA_WEBHOOK_URL.
+
+alias: "Barcode Scanner — Needs Attention"
+description: >-
+  Notify when a scanned barcode needs manual action (unknown product,
+  auto-linked item to review, etc.). Works for all scan sources —
+  ESP32 hardware scanner, BinaryEye (Android), and iOS Shortcuts.
+
+mode: queued
+max: 10
+
+triggers:
+  - trigger: webhook
+    webhook_id: "barcode-scanner"
+    allowed_methods:
+      - POST
+    local_only: false
+
+# No conditions needed — the middleware only sends webhooks
+# for scans that actually need attention (needs_action=true).
+
+actions:
+  - variables:
+      barcode: "{{ trigger.json.barcode }}"
+      webhook_action: "{{ trigger.json.action | default('notify') }}"
+
+  - choose:
+      # ── Clear notification (sent when user reviews in the web UI) ──
+      - conditions:
+          - condition: template
+            value_template: "{{ webhook_action == 'clear' }}"
+        sequence:
+          - action: notify.mobile_app_YOUR_PHONE
+            data:
+              message: "clear_notification"
+              data:
+                tag: "barcode-{{ barcode }}"
+
+    # ── Default: send notification ──
+    default:
+      - variables:
+          item: "{{ trigger.json.item }}"
+          result_type: "{{ trigger.json.result_type }}"
+          action_url: "{{ trigger.json.action_url }}"
+          added_to_list: "{{ trigger.json.added_to_list | default(true) }}"
+          paused: "{{ trigger.json.paused | default(false) }}"
+
+      - variables:
+          title: >-
+            {% if paused %}
+              Scanned (scan & link)
+            {% elif result_type == 'unknown' %}
+              Unknown barcode
+            {% elif result_type in ['added_as_note', 'needs_mapping'] %}
+              Not linked
+            {% elif result_type == 'added' %}
+              Auto-linked — review
+            {% elif result_type == 'queued' %}
+              Queued for retry
+            {% else %}
+              Barcode scanned
+            {% endif %}
+          message: >-
+            {% if paused %}
+              {{ item }} — scan & link mode, not added to list
+            {% elif result_type == 'unknown' %}
+              {{ barcode }} — tap to identify
+            {% elif result_type in ['added_as_note', 'needs_mapping'] %}
+              {% if added_to_list %}
+                {{ item }} — added to list, tap to link
+              {% else %}
+                {{ item }} — tap to link to a Mealie item
+              {% endif %}
+            {% elif result_type == 'added' %}
+              {{ item }} — tap to review
+            {% elif result_type == 'queued' %}
+              {{ item }} — Mealie unreachable, will retry automatically
+            {% else %}
+              {{ item }}
+            {% endif %}
+
+      # ── Phone notification with deep link ──
+      - action: notify.mobile_app_YOUR_PHONE
+        data:
+          title: "{{ title }}"
+          message: "{{ message }}"
+          data:
+            # Android
+            clickAction: "{{ action_url }}"
+            # iOS
+            url: "{{ action_url }}"
+            # Group by barcode to prevent notification spam
+            group: "barcode-scanner"
+            tag: "barcode-{{ barcode }}"

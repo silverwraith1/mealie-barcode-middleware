@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ doc_title }} — Docs — Mealie Barcode Middleware{% endblock %}
+
+{% block content %}
+<!-- Page header (mobile only when TOC exists, always when no TOC) -->
+<div class="page-header d-print-none mb-3{{ ' d-md-none' if toc }}">
+    <div class="row g-2 align-items-center">
+        <div class="col-auto">
+            <a href="/docs" class="btn btn-ghost-secondary btn-icon" title="Back to Documentation">
+                <i class="ti ti-arrow-left icon"></i>
+            </a>
+        </div>
+        <div class="col">
+            <div class="page-pretitle">Documentation</div>
+            <h2 class="page-title">{{ doc_title }}</h2>
+        </div>
+    </div>
+</div>
+<!-- END PAGE HEADER -->
+
+<div class="row">
+    {# ── Scrollspy sidebar (desktop only) ── #}
+    {% if toc %}
+    <div class="col-md-3 d-none d-md-block">
+        <div class="doc-toc-sidebar">
+            <a href="/docs" class="btn btn-ghost-secondary btn-icon mb-2" title="Back to Documentation">
+                <i class="ti ti-arrow-left icon"></i>
+            </a>
+            <div class="page-pretitle">Documentation</div>
+            <h2 class="page-title mb-3">{{ doc_title }}</h2>
+            <div class="card">
+                <div class="card-body">
+                    <nav id="doc-toc" class="nav nav-pills flex-column">
+                        {% for entry in toc %}
+                        <a class="nav-link" href="#{{ entry.id }}">{{ entry.text }}</a>
+                        {% endfor %}
+                    </nav>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# ── Article content ── #}
+    <div class="{{ 'col-md-9' if toc else 'col-12' }}">
+        <div class="card" id="doc-content">
+            <div class="card-body markdown">
+                {{ doc_html | safe }}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if toc %}
+<script src="/static/js/doc-scrollspy.js"></script>
+{% endif %}
+{% endblock %}

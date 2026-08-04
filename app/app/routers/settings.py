@@ -1,0 +1,592 @@
+import logging
+import os
+import shutil
+from datetime import datetime
+
+import bcrypt
+from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from sqlalchemy.orm import Session
+
+from app.auth import generate_token, hash_token
+from app.config import settings, EDITABLE_SETTINGS, READONLY_SETTINGS
+from app.database import get_db
+from app.models import ApiToken, BarcodeCache, BarcodeMapping, Item, Activity, RetryQueue, User
+from app.templating import templates, set_cached_theme, get_cached_theme_css
+from app.theme import THEME_CHOICES, THEME_DEFAULTS, get_theme, save_theme
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+# Ordered groups for the settings page
+_GROUP_ORDER = [
+    "Mealie Connection",
+    "Home Assistant",
+    "Barcode Lookup Sources",
+    "Matching & Sync",
+    "Scanning",
+    "System",
+]
+
+# Tab-level descriptions shown below the heading
+_TAB_DESCRIPTIONS = {
+    "mealie": "Connection details for your Mealie instance. Configured via environment variables.",
+    "homeassistant": "Push notifications and deep links via Home Assistant webhooks.",
+    "lookup": "Configure which product databases to query and how they interact.",
+    "matching": "Control how scanned products are matched and synced with Mealie.",
+    "scanning": "What happens when a barcode is scanned — unknown barcode handling and list pause controls.",
+    "system": "Timezone, logging, and other system-level settings.",
+    "appearance": "Customize the look and feel of the web dashboard.",
+    "tokens": "API tokens for authenticating barcode scanners.",
+    "users": "Manage user accounts for the web dashboard.",
+    "admin": "Backup, purge, or reset the application database.",
+}
+
+# Section-level descriptions shown below section headings
+_SECTION_DESCRIPTIONS = {
+    "Strategy": "Control how multiple data sources work together.",
+    "Fuzzy Matching": "How product names are compared against your Mealie food catalog.",
+    "Scheduling & Retry": "How often data is refreshed and how failures are handled.",
+    "Unknown & Unlinked Barcodes": "What happens when a scanned barcode can't be matched to a Mealie item.",
+    "Notifications": "Send push notifications to your phone when a scanned item needs attention.",
+    "Infrastructure": "Set via environment variables — not editable here.",
+}
+
+
+def _build_config_groups():
+    """Build config groups with section sub-grouping for the template.
+
+    Returns [(group_name, [(section_name, [items])])].
+    Within each section, editable items appear before readonly items.
+    """
+    group_items: dict[str, list] = {g: [] for g in _GROUP_ORDER}
+
+    # Process editable first so they appear before readonly within sections
+    for key, meta in EDITABLE_SETTINGS.items():
+        group = meta["group"]
+        val = settings.get_display_value(key)
+        overridden = settings.is_overridden(key)
+        env_default = str(settings.get_env_default(key))
+        group_items.setdefault(group, []).append({
+            "key": meta["label"],
+            "field": key,
+            "value": val,
+            "description": meta["description"],
+            "hint": meta.get("hint"),
+            "help": meta.get("help"),
+            "form_label": meta.get("form_label"),
+            "editable": True,
+            "overridden": overridden,
+            "env_default": env_default,
+            "type": meta["type"],
+            "choices": meta.get("choices"),
+            "min": meta.get("min"),
+            "max": meta.get("max"),
+            "wide": meta.get("wide", False),
+            "section": meta.get("section", ""),
+        })
+
+    # Then readonly
+    for key, meta in READONLY_SETTINGS.items():
+        group = meta["group"]
+        if meta.get("secret"):
+            val = "***" if getattr(settings, key) else "(not set)"
+        else:
+            val = getattr(settings, key)
+            if val is None or val == "":
+                val = "(not set)"
+            else:
+                val = str(val)
+        group_items.setdefault(group, []).append({
+            "key": meta["label"],
+            "field": key,
+            "value": val,
+            "description": meta["description"],
+            "hint": meta.get("hint"),
+            "help": meta.get("help"),
+            "editable": False,
+            "section": meta.get("section", ""),
+        })
+
+    # Sub-group items by section within each group, preserving insertion order
+    result = []
+    for g in _GROUP_ORDER:
+        items = group_items.get(g)
+        if not items:
+            continue
+        section_map: dict[str, list] = {}
+        section_order: list[str] = []
+        for item in items:
+            sec = item["section"]
+            if sec not in section_map:
+                section_map[sec] = []
+                section_order.append(sec)
+            section_map[sec].append(item)
+        sections = [(s, section_map[s]) for s in section_order]
+        result.append((g, sections))
+
+    return result
+
+
+# Tab definitions: id → (label, icon, group heading)
+_TABS = [
+    ("mealie",        "Mealie",            "ti-plug"),
+    ("homeassistant", "Home Assistant",     "ti-home"),
+    ("lookup",        "Barcode Lookup",     "ti-barcode"),
+    ("matching",      "Matching & Sync",    "ti-arrows-sort"),
+    ("scanning",      "Scanning",           "ti-scan"),
+    ("system",        "System",             "ti-settings"),
+    ("appearance",    "Appearance",         "ti-palette"),
+    ("tokens",        "API Tokens",         "ti-key"),
+    ("users",         "Users",              "ti-users"),
+    ("admin",         "Database",           "ti-database"),
+]
+
+# Sidebar grouping: which tabs go under which subheader
+_SIDEBAR_GROUPS = {
+    "Integrations": ["mealie", "homeassistant"],
+    "Configuration": ["lookup", "matching", "scanning", "system"],
+    "Personalization": ["appearance"],
+    "Security": ["tokens", "users"],
+    "Administration": ["admin"],
+}
+
+
+def _require_admin(request: Request) -> RedirectResponse | None:
+    """Return a redirect if the current user is not an admin, else None."""
+    if not request.session.get("is_admin", False):
+        return RedirectResponse("/", status_code=303)
+    return None
+
+# Which config groups map to which tab
+_TAB_GROUPS = {
+    "mealie":        ["Mealie Connection"],
+    "homeassistant": ["Home Assistant"],
+    "lookup":        ["Barcode Lookup Sources"],
+    "matching":      ["Matching & Sync"],
+    "scanning":      ["Scanning"],
+    "system":        ["System"],
+}
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, tab: str = Query("mealie"), db: Session = Depends(get_db)):
+    if redirect := _require_admin(request):
+        return redirect
+
+    all_groups = _build_config_groups()
+    # Filter groups for the active tab
+    active_groups = _TAB_GROUPS.get(tab, [])
+    tab_groups = [(name, sections) for name, sections in all_groups if name in active_groups]
+    has_editable = any(
+        item["editable"]
+        for _, sections in tab_groups
+        for _, items in sections
+        for item in items
+    )
+    tokens = db.query(ApiToken).order_by(ApiToken.created_at.desc()).all() if tab == "tokens" else []
+    theme = get_theme(db) if tab == "appearance" else {}
+    users = db.query(User).order_by(User.created_at).all() if tab == "users" else []
+
+    # Admin tab: gather row counts and DB info
+    admin_info = {}
+    if tab == "admin":
+        admin_info = _get_admin_info(db)
+
+    # Resolve the current tab label for the content heading
+    tab_label = next((label for tid, label, _ in _TABS if tid == tab), tab.title())
+
+    return templates.TemplateResponse(request, "settings.html", {
+        "tabs": _TABS,
+        "sidebar_groups": _SIDEBAR_GROUPS,
+        "current_tab": tab,
+        "current_tab_label": tab_label,
+        "tab_description": _TAB_DESCRIPTIONS.get(tab, ""),
+        "section_descriptions": _SECTION_DESCRIPTIONS,
+        "config_groups": tab_groups,
+        "has_editable": has_editable,
+        "tokens": tokens,
+        "new_token": None,
+        "users": users,
+        "theme": theme,
+        "theme_choices": THEME_CHOICES,
+        "admin_info": admin_info,
+    })
+
+
+@router.post("/settings/configuration", response_class=HTMLResponse)
+async def save_settings(request: Request, db: Session = Depends(get_db)):
+    """Save editable settings from the form. Admin only."""
+    if redirect := _require_admin(request):
+        return redirect
+    form_data = await request.form()
+    tab = form_data.get("_tab", "mealie")
+
+    # Only process settings that belong to the current tab to avoid
+    # absent checkboxes on other tabs being misread as "false".
+    tab_group_names = _TAB_GROUPS.get(tab, [])
+
+    changed = []
+    for key, meta in EDITABLE_SETTINGS.items():
+        if meta["group"] not in tab_group_names:
+            continue
+        form_key = f"setting_{key}"
+        if meta["type"] == "bool":
+            # Checkboxes: present = True, absent = False
+            new_val = "true" if form_key in form_data else "false"
+        else:
+            new_val = form_data.get(form_key)
+            if new_val is None:
+                continue
+
+        new_val = new_val.strip()
+        current_val = settings.get_display_value(key)
+        if new_val != current_val:
+            try:
+                settings.save_override(key, new_val, db)
+                changed.append(key)
+            except ValueError as e:
+                logger.warning("Invalid setting %s=%s: %s", key, new_val, e)
+
+    if changed:
+        logger.info("Settings updated via UI: %s", ", ".join(changed))
+
+    return RedirectResponse(f"/settings?tab={tab}&saved=1", status_code=303)
+
+
+@router.post("/settings/configuration/{field}/reset")
+def reset_setting(field: str, request: Request, db: Session = Depends(get_db)):
+    """Reset a single setting to its env/default value. Admin only."""
+    if redirect := _require_admin(request):
+        return redirect
+    if field not in EDITABLE_SETTINGS:
+        return RedirectResponse("/settings?tab=mealie", status_code=303)
+
+    # Determine which tab this field belongs to
+    group = EDITABLE_SETTINGS[field].get("group", "")
+    tab = "mealie"
+    for tab_id, groups in _TAB_GROUPS.items():
+        if group in groups:
+            tab = tab_id
+            break
+
+    settings.reset_override(field, db)
+    logger.info("Setting '%s' reset to env default via UI", field)
+    return RedirectResponse(f"/settings?tab={tab}&saved=1", status_code=303)
+
+
+@router.post("/settings/tokens/create", response_class=HTMLResponse)
+def create_token(request: Request, name: str = Form(...), db: Session = Depends(get_db)):
+    """Create a new API token. Admin only."""
+    if redirect := _require_admin(request):
+        return redirect
+    raw = generate_token()
+    hashed = hash_token(raw)
+    token = ApiToken(name=name, token_hash=hashed, token_prefix=raw[:8])
+    db.add(token)
+    db.commit()
+    db.refresh(token)
+
+    tokens = db.query(ApiToken).order_by(ApiToken.created_at.desc()).all()
+    return templates.TemplateResponse(request, "settings.html", {
+        "tabs": _TABS,
+        "sidebar_groups": _SIDEBAR_GROUPS,
+        "config_groups": [],
+        "tokens": tokens,
+        "current_tab": "tokens",
+        "current_tab_label": "API Tokens",
+        "tab_description": _TAB_DESCRIPTIONS.get("tokens", ""),
+        "section_descriptions": _SECTION_DESCRIPTIONS,
+        "new_token": raw,
+        "new_token_name": name,
+        "theme": {},
+        "theme_choices": THEME_CHOICES,
+    })
+
+
+@router.post("/settings/tokens/{token_id}/delete")
+def delete_token(token_id: str, request: Request, db: Session = Depends(get_db)):
+    """Delete an API token. Admin only."""
+    if redirect := _require_admin(request):
+        return redirect
+    token = db.get(ApiToken, token_id)
+    if token:
+        db.delete(token)
+        db.commit()
+    return RedirectResponse("/settings?tab=tokens", status_code=303)
+
+
+# ── Pause Mode ───────────────────────────────────────────────────────
+
+@router.get("/api/settings/pause-status")
+def api_pause_status(db: Session = Depends(get_db)):
+    """Return current pause state (used by banner JS + SSE init)."""
+    from app.pause import get_pause_status
+    return JSONResponse(get_pause_status(db))
+
+
+@router.post("/api/settings/pause")
+async def api_pause(request: Request, db: Session = Depends(get_db)):
+    """Activate pause mode for N minutes. Admin-only."""
+    if not request.session.get("is_admin", False):
+        return JSONResponse({"error": "admin required"}, status_code=403)
+    from app.pause import pause_until, get_pause_status
+    from app.events import scan_events
+    body = await request.json()
+    minutes = int(body.get("minutes", 20))
+    if minutes < 1 or minutes > 1440:
+        return JSONResponse({"error": "minutes must be 1–1440"}, status_code=422)
+    pause_until(db, minutes)
+    status = get_pause_status(db)
+    scan_events.publish_threadsafe("pause", status)
+    return JSONResponse(status)
+
+
+@router.post("/api/settings/resume")
+def api_resume(request: Request, db: Session = Depends(get_db)):
+    """Cancel pause mode immediately. Admin-only."""
+    if not request.session.get("is_admin", False):
+        return JSONResponse({"error": "admin required"}, status_code=403)
+    from app.pause import resume_now
+    from app.events import scan_events
+    resume_now(db)
+    scan_events.publish_threadsafe("pause", {
+        "paused": False, "remaining_seconds": None, "resumes_at": None,
+    })
+    return JSONResponse({"paused": False})
+
+
+# ── Theme ────────────────────────────────────────────────────────────
+
+@router.get("/theme.css")
+def theme_css():
+    """Serve the current theme as a tiny CSS file (overrides Tabler defaults)."""
+    css = get_cached_theme_css()
+    return Response(content=css, media_type="text/css", headers={
+        "Cache-Control": "no-cache",
+    })
+
+
+@router.get("/api/theme")
+def api_get_theme(db: Session = Depends(get_db)):
+    """Return the current theme settings as JSON (used by theme-init.js)."""
+    return JSONResponse(get_theme(db))
+
+
+@router.post("/api/theme/mode")
+async def api_set_theme_mode(request: Request, db: Session = Depends(get_db)):
+    """Quick-toggle color mode from the navbar (fire-and-forget)."""
+    body = await request.json()
+    mode = body.get("mode", "light")
+    current = get_theme(db)
+    current["mode"] = mode
+    save_theme(db, current)
+    set_cached_theme(get_theme(db))
+    return JSONResponse({"ok": True})
+
+
+@router.post("/settings/theme")
+async def save_theme_settings(request: Request, db: Session = Depends(get_db)):
+    """Save theme settings from the appearance tab form. Admin only."""
+    if redirect := _require_admin(request):
+        return redirect
+    form_data = await request.form()
+    values = {
+        "mode": form_data.get("theme_mode", THEME_DEFAULTS["mode"]),
+        "color": form_data.get("theme_color", THEME_DEFAULTS["color"]),
+        "font": form_data.get("theme_font", THEME_DEFAULTS["font"]),
+        "base": form_data.get("theme_base", THEME_DEFAULTS["base"]),
+        "radius": form_data.get("theme_radius", THEME_DEFAULTS["radius"]),
+    }
+    save_theme(db, values)
+    set_cached_theme(get_theme(db))
+    return RedirectResponse("/settings?tab=appearance&saved=1", status_code=303)
+
+
+# ── Admin / Database ─────────────────────────────────────────────────
+
+def _get_admin_info(db: Session) -> dict:
+    """Gather DB stats for the admin tab."""
+    db_path = settings.db_path
+    try:
+        file_size = os.path.getsize(db_path)
+        modified_at = datetime.fromtimestamp(os.path.getmtime(db_path))
+    except OSError:
+        file_size = 0
+        modified_at = None
+
+    return {
+        "db_path": db_path,
+        "file_size": file_size,
+        "modified_at": modified_at,
+        "tables": {
+            "barcode_cache": db.query(BarcodeCache).count(),
+            "barcode_mappings": db.query(BarcodeMapping).count(),
+            "items": db.query(Item).count(),
+            "activities": db.query(Activity).count(),
+            "retry_queue": db.query(RetryQueue).count(),
+            "api_tokens": db.query(ApiToken).count(),
+        },
+    }
+
+
+@router.post("/settings/admin/backup")
+def admin_backup(request: Request):
+    """Download the SQLite database file. Admin only."""
+    if not request.session.get("is_admin", False):
+        return RedirectResponse("/settings?tab=mealie", status_code=303)
+    db_path = settings.db_path
+    if not os.path.isfile(db_path):
+        return RedirectResponse("/settings?tab=admin", status_code=303)
+
+    # Create a safe copy to avoid locking issues
+    backup_path = db_path + ".backup"
+    shutil.copy2(db_path, backup_path)
+
+    def _cleanup():
+        try:
+            os.unlink(backup_path)
+        except OSError:
+            pass
+
+    return FileResponse(
+        backup_path,
+        media_type="application/octet-stream",
+        filename="barcode.db",
+        background=_cleanup,
+    )
+
+
+@router.post("/settings/admin/purge/{table}")
+def admin_purge_table(table: str, request: Request, db: Session = Depends(get_db)):
+    """Purge all rows from a specific table. Admin only."""
+    if not request.session.get("is_admin", False):
+        return RedirectResponse("/settings?tab=mealie", status_code=303)
+    table_map = {
+        "barcode_cache": BarcodeCache,
+        "barcode_mappings": BarcodeMapping,
+        "items": Item,
+        "activities": Activity,
+        "retry_queue": RetryQueue,
+    }
+    model = table_map.get(table)
+    if not model:
+        return RedirectResponse("/settings?tab=admin", status_code=303)
+
+    # If purging items, also remove mappings that reference them
+    if model is Item:
+        db.query(BarcodeMapping).delete()
+    db.query(model).delete()
+    db.commit()
+    logger.info("Admin: purged table '%s'", table)
+    return RedirectResponse("/settings?tab=admin", status_code=303)
+
+
+@router.post("/settings/admin/reset")
+def admin_reset(request: Request, db: Session = Depends(get_db)):
+    """Delete all data but keep tokens and schema intact. Admin only."""
+    if not request.session.get("is_admin", False):
+        return RedirectResponse("/settings?tab=mealie", status_code=303)
+    db.query(BarcodeMapping).delete()
+    db.query(BarcodeCache).delete()
+    db.query(Item).delete()
+    db.query(Activity).delete()
+    db.query(RetryQueue).delete()
+    db.commit()
+    logger.info("Admin: full data reset (tokens preserved)")
+    return RedirectResponse("/settings?tab=admin", status_code=303)
+
+
+@router.post("/settings/admin/factory-reset")
+def admin_factory_reset(request: Request, db: Session = Depends(get_db)):
+    """Delete ALL data including tokens. Admin only."""
+    if not request.session.get("is_admin", False):
+        return RedirectResponse("/settings?tab=mealie", status_code=303)
+    db.query(BarcodeMapping).delete()
+    db.query(BarcodeCache).delete()
+    db.query(Item).delete()
+    db.query(Activity).delete()
+    db.query(RetryQueue).delete()
+    db.query(ApiToken).delete()
+    db.commit()
+    logger.info("Admin: factory reset — all data deleted")
+    return RedirectResponse("/settings?tab=admin", status_code=303)
+
+
+# ── User management ─────────────────────────────────────────────────
+
+
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+@router.post("/settings/users/add")
+def add_user(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    is_admin: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Create a new user account. Admin only."""
+    if not request.session.get("is_admin", False):
+        return RedirectResponse("/settings?tab=mealie", status_code=303)
+    username = username.strip()
+    if len(username) < 3 or len(password) < 8 or len(password) > 128:
+        return RedirectResponse("/settings?tab=users", status_code=303)
+
+    # Check for duplicates
+    if db.query(User).filter(User.username == username).first():
+        return RedirectResponse("/settings?tab=users", status_code=303)
+
+    db.add(User(
+        username=username,
+        password_hash=_hash_password(password),
+        is_admin=bool(is_admin),
+    ))
+    db.commit()
+    logger.info("User created: %s (admin=%s)", username, bool(is_admin))
+    return RedirectResponse("/settings?tab=users", status_code=303)
+
+
+@router.post("/settings/users/{user_id}/delete")
+def delete_user(user_id: int, request: Request, db: Session = Depends(get_db)):
+    """Delete a user account. Admin only. Cannot delete yourself."""
+    if not request.session.get("is_admin", False):
+        return RedirectResponse("/settings?tab=mealie", status_code=303)
+    current_user_id = request.session.get("user_id")
+    if user_id == current_user_id:
+        return RedirectResponse("/settings?tab=users", status_code=303)
+
+    user = db.get(User, user_id)
+    if user:
+        logger.info("User deleted: %s", user.username)
+        db.delete(user)
+        db.commit()
+    return RedirectResponse("/settings?tab=users", status_code=303)
+
+
+@router.post("/settings/users/{user_id}/password")
+def change_password(
+    user_id: int,
+    request: Request,
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Change a user's password. Admins can change any, users only their own."""
+    current_user_id = request.session.get("user_id")
+    is_admin = request.session.get("is_admin", False)
+
+    # Non-admins can only change their own password
+    if not is_admin and user_id != current_user_id:
+        return RedirectResponse("/settings?tab=users", status_code=303)
+
+    if len(password) < 8 or len(password) > 128:
+        return RedirectResponse("/settings?tab=users", status_code=303)
+
+    user = db.get(User, user_id)
+    if user:
+        user.password_hash = _hash_password(password)
+        db.commit()
+        logger.info("Password changed for user: %s", user.username)
+    return RedirectResponse("/settings?tab=users", status_code=303)
