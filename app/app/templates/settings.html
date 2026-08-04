@@ -1,0 +1,744 @@
+{% extends "base.html" %}
+{% block title %}Settings — Mealie Barcode Middleware{% endblock %}
+
+{% block content %}
+<!-- BEGIN PAGE HEADER -->
+<div class="page-header d-print-none mb-3">
+    <div class="row g-2 align-items-center">
+        <div class="col">
+            <h2 class="page-title">Settings</h2>
+        </div>
+    </div>
+</div>
+<!-- END PAGE HEADER -->
+
+<!-- BEGIN PAGE BODY -->
+
+<div class="card">
+    <div class="row g-0">
+        {# ── Left sidebar ── #}
+        <div class="col-12 col-md-3 border-end">
+            <div class="card-body">
+                {% for group_label, group_tab_ids in sidebar_groups.items() %}
+                <h4 class="subheader{% if not loop.first %} mt-4{% endif %}">{{ group_label }}</h4>
+                <div class="list-group list-group-transparent">
+                    {% for tab_id, tab_label, tab_icon in tabs %}
+                    {% if tab_id in group_tab_ids %}
+                    <a href="/settings?tab={{ tab_id }}"
+                       class="list-group-item list-group-item-action d-flex align-items-center {{ 'active' if current_tab == tab_id }}">
+                        <span class="me-2"><i class="ti {{ tab_icon }} icon"></i></span>
+                        {{ tab_label }}
+                    </a>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        {# ── Right content area ── #}
+        <div class="col-12 col-md-9 d-flex flex-column">
+
+            {# ──────────── Config tabs (mealie, lookup, matching, system) ──────────── #}
+            {% if current_tab not in ('tokens', 'appearance', 'users', 'admin') %}
+
+            <form method="post" action="/settings/configuration">
+                <input type="hidden" name="_tab" value="{{ current_tab }}">
+                <div class="card-body">
+                    <h2 class="mb-4">{{ current_tab_label }}</h2>
+                    {% if tab_description %}
+                    <p class="card-subtitle">{{ tab_description }}</p>
+                    {% endif %}
+
+                    {% for group_name, sections in config_groups %}
+                    {% for section_name, items in sections %}
+
+                    {# ── Section card ── #}
+                    {% set editable_items = items|selectattr('editable')|list %}
+                    {% set readonly_items = items|rejectattr('editable')|list %}
+                    {% set bool_items = editable_items|selectattr('type', 'equalto', 'bool')|list %}
+                    {% set inline_toggle = (bool_items|length == 1 and readonly_items) %}
+
+                    {% if section_name %}
+                    <div class="card mt-3">
+                        <div class="card-header card-header-light">
+                            <div>
+                                <h3 class="card-title">{{ section_name }}</h3>
+                                {% if section_name in section_descriptions %}
+                                <p class="card-subtitle">{{ section_descriptions[section_name] }}</p>
+                                {% endif %}
+                            </div>
+                            {% if inline_toggle %}
+                            {% set item = bool_items[0] %}
+                            <div class="card-actions d-flex align-items-center">
+                                <label class="form-check form-switch mb-0">
+                                    <input class="form-check-input" type="checkbox"
+                                        name="setting_{{ item.field }}" id="setting_{{ item.field }}"
+                                        value="true" data-default="{{ item.env_default }}"
+                                        {% if item.value == 'True' %}checked{% endif %}>
+                                    <span class="form-check-label">{{ item.description }}</span>
+                                </label>
+                                {% if item.help %}
+                                <span class="form-help ms-2" data-bs-toggle="popover" data-bs-placement="top"
+                                    data-bs-content="{{ item.help }}">?</span>
+                                {% endif %}
+                                <button type="button" class="btn btn-ghost-secondary btn-icon ms-1 btn-reset"
+                                    title="Reset to default" disabled>
+                                    <i class="ti ti-restore icon"></i>
+                                </button>
+                            </div>
+                            {% endif %}
+                        </div>
+
+                        {% set body_editable = editable_items if not inline_toggle else [] %}
+                        {% if body_editable or readonly_items %}
+                        <div class="card-body">
+                            <div class="row g-3">
+                                {% for item in body_editable %}
+
+                                {% if item.type == 'bool' %}
+                                {# ── Toggle switch ── #}
+                                <div class="col-md-6">
+                                    {% if item.form_label %}
+                                    <label class="form-label">
+                                        {{ item.form_label }}
+                                        {% if item.help %}
+                                        <span class="form-help ms-1" data-bs-toggle="popover" data-bs-placement="top"
+                                            data-bs-content="{{ item.help }}">?</span>
+                                        {% endif %}
+                                    </label>
+                                    {% endif %}
+                                    <div class="d-flex align-items-center">
+                                        <label class="form-check form-switch mb-0">
+                                            <input class="form-check-input" type="checkbox"
+                                                name="setting_{{ item.field }}" id="setting_{{ item.field }}"
+                                                value="true" data-default="{{ item.env_default }}"
+                                                {% if item.value == 'True' %}checked{% endif %}>
+                                            <span class="form-check-label">{{ item.description }}</span>
+                                        </label>
+                                        {% if not item.form_label and item.help %}
+                                        <span class="form-help ms-2" data-bs-toggle="popover" data-bs-placement="top"
+                                            data-bs-content="{{ item.help }}">?</span>
+                                        {% endif %}
+                                        <button type="button" class="btn btn-sm btn-ghost-secondary ms-2 btn-reset"
+                                            title="Reset to default" disabled>
+                                            <i class="ti ti-restore icon"></i>
+                                        </button>
+                                    </div>
+                                    {% if item.hint %}
+                                    <small class="form-hint">{{ item.hint }}</small>
+                                    {% endif %}
+                                </div>
+
+                                {% elif item.type == 'choice' %}
+                                {# ── Dropdown select ── #}
+                                <div class="col-md-6">
+                                    <label class="form-label" for="setting_{{ item.field }}">
+                                        {{ item.description }}
+                                        {% if item.help %}
+                                        <span class="form-help ms-1" data-bs-toggle="popover" data-bs-placement="top"
+                                            data-bs-content="{{ item.help }}">?</span>
+                                        {% endif %}
+                                    </label>
+                                    <div class="row g-2">
+                                        <div class="col">
+                                            <select class="form-select" name="setting_{{ item.field }}" id="setting_{{ item.field }}"
+                                                data-default="{{ item.env_default }}">
+                                                {% for opt in item.choices %}
+                                                {% if opt is string %}
+                                                <option value="{{ opt }}" {% if item.value == opt %}selected{% endif %}>{{ opt }}</option>
+                                                {% else %}
+                                                <option value="{{ opt[0] }}" {% if item.value == opt[0] %}selected{% endif %}>{{ opt[1] }}</option>
+                                                {% endif %}
+                                                {% endfor %}
+                                            </select>
+                                            {% if item.hint %}
+                                            <small class="form-hint">{{ item.hint }}</small>
+                                            {% endif %}
+                                        </div>
+                                        <div class="col-auto">
+                                            <button type="button" class="btn btn-icon btn-outline-secondary btn-reset"
+                                                title="Reset to default" disabled>
+                                                <i class="ti ti-restore icon"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {% elif item.type == 'int' %}
+                                {# ── Number input ── #}
+                                <div class="col-md-6">
+                                    <label class="form-label" for="setting_{{ item.field }}">
+                                        {{ item.description }}
+                                        {% if item.help %}
+                                        <span class="form-help ms-1" data-bs-toggle="popover" data-bs-placement="top"
+                                            data-bs-content="{{ item.help }}">?</span>
+                                        {% endif %}
+                                    </label>
+                                    <div class="row g-2">
+                                        <div class="col">
+                                            <input type="number" class="form-control"
+                                                name="setting_{{ item.field }}" id="setting_{{ item.field }}"
+                                                value="{{ item.value }}" data-default="{{ item.env_default }}"
+                                                {% if item.min is not none %}min="{{ item.min }}"{% endif %}
+                                                {% if item.max is not none %}max="{{ item.max }}"{% endif %}>
+                                            {% if item.hint %}
+                                            <small class="form-hint">{{ item.hint }}</small>
+                                            {% endif %}
+                                        </div>
+                                        <div class="col-auto">
+                                            <button type="button" class="btn btn-icon btn-outline-secondary btn-reset"
+                                                title="Reset to default" disabled>
+                                                <i class="ti ti-restore icon"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {% else %}
+                                {# ── Text input ── #}
+                                <div class="{{ 'col-12' if item.wide else 'col-md-6' }}">
+                                    <label class="form-label" for="setting_{{ item.field }}">
+                                        {{ item.description }}
+                                        {% if item.help %}
+                                        <span class="form-help ms-1" data-bs-toggle="popover" data-bs-placement="top"
+                                            data-bs-content="{{ item.help }}">?</span>
+                                        {% endif %}
+                                    </label>
+                                    <div class="row g-2">
+                                        <div class="col">
+                                            <input type="text" class="form-control"
+                                                name="setting_{{ item.field }}" id="setting_{{ item.field }}"
+                                                value="{{ item.value }}" data-default="{{ item.env_default }}"
+                                                placeholder="{{ item.env_default or '' }}">
+                                            {% if item.hint %}
+                                            <small class="form-hint">{{ item.hint }}</small>
+                                            {% endif %}
+                                        </div>
+                                        <div class="col-auto">
+                                            <button type="button" class="btn btn-icon btn-outline-secondary btn-reset"
+                                                title="Reset to default" disabled>
+                                                <i class="ti ti-restore icon"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% endfor %}
+
+                                {# ── Readonly fields ── #}
+                                {% for item in readonly_items %}
+                                <div class="col-md-6">
+                                    <label class="form-label text-secondary mb-1">
+                                        <i class="ti ti-lock icon text-muted me-1"></i>{{ item.description }}
+                                    </label>
+                                    <input type="text" class="form-control" value="{{ item.value }}" disabled>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% else %}
+                    {# ── No section name: render fields directly (e.g. Mealie tab) ── #}
+                    {% if editable_items or readonly_items %}
+                    <div class="row g-3">
+                        {% for item in readonly_items %}
+                        <div class="col-md-6">
+                            <label class="form-label text-secondary mb-1">
+                                <i class="ti ti-lock icon text-muted me-1"></i>{{ item.description }}
+                            </label>
+                            <input type="text" class="form-control" value="{{ item.value }}" disabled>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% endif %}
+
+                    {% endfor %}
+                    {% endfor %}
+
+                    {% if not config_groups and current_tab != 'scanning' %}
+                    <div class="empty">
+                        <p class="empty-title">No settings on this tab</p>
+                        <p class="empty-subtitle text-secondary">These settings are configured via environment variables in <code>.env</code>.</p>
+                    </div>
+                    {% endif %}
+
+                    {# ──────────── Pause section (scanning tab, admin-only) ──────────── #}
+                    {% if current_tab == 'scanning' and request.session.get('is_admin') %}
+                    <div class="card mt-3">
+                        <div class="card-header card-header-light">
+                            <div>
+                                <h3 class="card-title">Scan & Link Mode</h3>
+                                <p class="card-subtitle">Temporarily scan without adding to your shopping list.
+                                    Barcodes are still looked up, cached, and auto-linked — only the
+                                    list addition is skipped.</p>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div id="settings-pause-status">
+                                <div id="settings-pause-active" class="d-none">
+                                    <div class="mb-3">
+                                        <span class="badge bg-yellow text-yellow-fg">Active</span>
+                                        Resumes in <strong id="settings-pause-remaining"></strong>
+                                    </div>
+                                    <button type="button" class="btn btn-warning" id="settings-resume-btn">
+                                        <i class="ti ti-player-play icon"></i> Stop
+                                    </button>
+                                </div>
+                                <div id="settings-pause-inactive">
+                                    <div class="btn-list">
+                                        <button type="button" class="btn btn-warning pause-duration-btn" data-minutes="5">5 min</button>
+                                        <button type="button" class="btn btn-warning pause-duration-btn" data-minutes="20">20 min</button>
+                                        <button type="button" class="btn btn-warning pause-duration-btn" data-minutes="60">1 hour</button>
+                                        <button type="button" class="btn btn-warning pause-duration-btn" data-minutes="240">4 hours</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                </div>
+                {% if has_editable %}
+                <div class="card-footer bg-transparent mt-auto">
+                    <div class="d-flex justify-content-end">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="ti ti-device-floppy icon"></i>
+                            Save
+                        </button>
+                    </div>
+                </div>
+                {% endif %}
+            </form>
+
+            {# ──────────── Appearance tab ──────────── #}
+            {% elif current_tab == 'appearance' %}
+
+            <form method="post" action="/settings/theme">
+                <div class="card-body">
+                    <h2 class="mb-4">{{ current_tab_label }}</h2>
+                    {% if tab_description %}
+                    <p class="card-subtitle">{{ tab_description }}</p>
+                    {% endif %}
+
+                    <h3 class="card-title mt-4">Color mode</h3>
+                    <p class="card-subtitle">Choose between light and dark mode.</p>
+                    <div class="form-selectgroup">
+                        {% for opt in theme_choices.mode %}
+                        <label class="form-selectgroup-item">
+                            <input type="radio" name="theme_mode" value="{{ opt }}"
+                                class="form-selectgroup-input"
+                                {% if theme.mode == opt %}checked{% endif %}>
+                            <span class="form-selectgroup-label">
+                                <i class="ti ti-{{ 'sun' if opt == 'light' else 'moon' }} icon"></i>
+                                {{ opt|capitalize }}
+                            </span>
+                        </label>
+                        {% endfor %}
+                    </div>
+
+                    <h3 class="card-title mt-4">Accent color</h3>
+                    <p class="card-subtitle">The primary color used for buttons, links, and highlights.</p>
+                    <div class="row g-2">
+                        {% for color in theme_choices.color %}
+                        <div class="col-auto">
+                            <label class="form-colorinput">
+                                <input name="theme_color" type="radio" value="{{ color }}"
+                                    class="form-colorinput-input"
+                                    {% if theme.color == color %}checked{% endif %}>
+                                <span class="form-colorinput-color bg-{{ color }}"></span>
+                            </label>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <h3 class="card-title mt-4">Font family</h3>
+                    <p class="card-subtitle">Choose the font family for the interface.</p>
+                    {% for opt in theme_choices.font %}
+                    <label class="form-check">
+                        <input type="radio" name="theme_font" value="{{ opt }}"
+                            class="form-check-input"
+                            {% if theme.font == opt %}checked{% endif %}>
+                        <span class="form-check-label">{{ opt|capitalize }}</span>
+                    </label>
+                    {% endfor %}
+
+                    <h3 class="card-title mt-4">Gray shade</h3>
+                    <p class="card-subtitle">The neutral gray tone used for backgrounds and borders.</p>
+                    {% for opt in theme_choices.base %}
+                    <label class="form-check">
+                        <input type="radio" name="theme_base" value="{{ opt }}"
+                            class="form-check-input"
+                            {% if theme.base == opt %}checked{% endif %}>
+                        <span class="form-check-label">{{ opt|capitalize }}</span>
+                    </label>
+                    {% endfor %}
+
+                    <h3 class="card-title mt-4">Corner radius</h3>
+                    <p class="card-subtitle">Border radius factor for cards, buttons, and inputs.</p>
+                    <div class="form-selectgroup">
+                        {% for opt in theme_choices.radius %}
+                        <label class="form-selectgroup-item">
+                            <input type="radio" name="theme_radius" value="{{ opt }}"
+                                class="form-selectgroup-input"
+                                {% if theme.radius == opt %}checked{% endif %}>
+                            <span class="form-selectgroup-label">{{ opt }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="card-footer bg-transparent mt-auto">
+                    <div class="d-flex justify-content-end">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="ti ti-device-floppy icon"></i>
+                            Save
+                        </button>
+                    </div>
+                </div>
+            </form>
+
+            {# ──────────── Tokens tab ──────────── #}
+            {% elif current_tab == 'tokens' %}
+
+            <div class="card-body">
+                <h2 class="mb-4">API Tokens</h2>
+                {% if tab_description %}
+                <p class="card-subtitle">{{ tab_description }}</p>
+                {% endif %}
+
+                {% if new_token %}
+                {# Token created — shown in a modal (auto-opened via JS below) #}
+                <div class="modal modal-blur fade" id="token-created-modal" tabindex="-1"
+                     role="dialog" aria-hidden="true"
+                     data-bs-backdrop="static" data-bs-keyboard="false">
+                    <div class="modal-dialog modal-dialog-centered" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header bg-success-lt">
+                                <div>
+                                    <h5 class="modal-title">
+                                        <i class="ti ti-circle-check me-1"></i> Token created
+                                    </h5>
+                                    <div class="text-secondary">{{ new_token_name }}</div>
+                                </div>
+                            </div>
+                            <div class="modal-body">
+                                <p class="mb-2">Copy this token now — it will <strong>not</strong> be shown again.</p>
+                                <div class="input-group">
+                                    <input type="text" class="form-control font-monospace user-select-all token-value"
+                                           value="{{ new_token }}" id="new-token-value" readonly>
+                                    <button class="btn btn-primary flex-shrink-0" type="button" data-copy-target="new-token-value">
+                                        <i class="ti ti-copy icon"></i> Copy
+                                    </button>
+                                </div>
+                                <div class="mt-3 p-2 bg-azure-lt rounded">
+                                    <div class="d-flex align-items-start">
+                                        <i class="ti ti-device-mobile me-2 mt-1"></i>
+                                        <div class="small">
+                                            <strong>Using a phone app?</strong> Paste this token as the
+                                            <strong>Scanner ID</strong> in BinaryEye (Android) or as the
+                                            Bearer token in iOS Shortcuts.
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn" data-bs-dismiss="modal">
+                                    I've copied the token
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {# Hidden trigger — Tabler doesn't expose bootstrap.Modal globally #}
+                <button type="button" class="d-none" id="token-modal-trigger"
+                        data-bs-toggle="modal" data-bs-target="#token-created-modal"></button>
+                {% endif %}
+
+                <h3 class="card-title mt-4">Create Token</h3>
+                <form method="post" action="/settings/tokens/create">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-12 col-sm-auto flex-grow-1">
+                            <label class="form-label" for="token-name">Token name</label>
+                            <input type="text" name="name" id="token-name" class="form-control" placeholder="e.g. Kitchen scanner, Phone – BinaryEye" required>
+                        </div>
+                        <div class="col-12 col-sm-auto">
+                            <button type="submit" class="btn btn-primary w-100 w-sm-auto">
+                                <i class="ti ti-plus icon"></i> Create
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <h3 class="card-title mt-4">Existing Tokens</h3>
+                <div class="table-responsive">
+                    <table class="table table-vcenter">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Prefix</th>
+                                <th>Created</th>
+                                <th class="w-1"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for token in tokens %}
+                            <tr>
+                                <td>{{ token.name }}</td>
+                                <td><code>{{ token.token_prefix or '—' }}…</code></td>
+                                <td class="text-secondary">{{ token.created_at|localtime }}</td>
+                                <td>
+                                    <form method="post" action="/settings/tokens/{{ token.id }}/delete"
+                                        data-confirm="Delete token &quot;{{ token.name|e }}&quot;?"
+                                        data-confirm-detail="Any scanner using this token will no longer be able to authenticate.">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                                            <i class="ti ti-trash icon"></i> Delete
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% if not tokens %}
+                            <tr>
+                                <td colspan="4" class="text-center text-secondary">No tokens created yet</td>
+                            </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            {# ──────────── Users tab ──────────── #}
+            {% elif current_tab == 'users' %}
+
+            <div class="card-body">
+                <h2 class="mb-4">Users</h2>
+                {% if tab_description %}
+                <p class="card-subtitle">{{ tab_description }}</p>
+                {% endif %}
+
+                <h3 class="card-title mt-4">Add User</h3>
+                <form action="/settings/users/add" method="post">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-12 col-sm">
+                            <label class="form-label">Username</label>
+                            <input type="text" name="username" class="form-control" placeholder="Username" required minlength="3">
+                        </div>
+                        <div class="col-12 col-sm">
+                            <label class="form-label">Password</label>
+                            <input type="password" name="password" class="form-control" placeholder="Min. 8 characters" required minlength="8">
+                        </div>
+                        <div class="col-auto">
+                            <label class="form-label d-none d-sm-block">&nbsp;</label>
+                            <label class="form-check mb-0">
+                                <input type="checkbox" name="is_admin" value="1" class="form-check-input">
+                                <span class="form-check-label">Admin</span>
+                            </label>
+                        </div>
+                        <div class="col-12 col-sm-auto">
+                            <button type="submit" class="btn btn-primary w-100 w-sm-auto">
+                                <i class="ti ti-plus icon"></i> Add
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <h3 class="card-title mt-4">Existing Users</h3>
+                <div class="table-responsive">
+                    <table class="table table-vcenter">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Role</th>
+                                <th>Created</th>
+                                <th>Password</th>
+                                <th class="w-1"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for user in users %}
+                            <tr>
+                                <td>{{ user.username }}</td>
+                                <td>
+                                    {% if user.is_admin %}
+                                    <span class="badge bg-purple text-purple-fg">Admin</span>
+                                    {% else %}
+                                    <span class="badge bg-secondary-lt">User</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-secondary">{{ user.created_at | localtime }}</td>
+                                <td>
+                                    <form action="/settings/users/{{ user.id }}/password" method="post" class="d-flex gap-2">
+                                        <input type="password" name="password" class="form-control form-control-sm" placeholder="New password" minlength="8" required>
+                                        <button type="submit" class="btn btn-sm btn-ghost-primary text-nowrap">
+                                            <i class="ti ti-key icon"></i> Set
+                                        </button>
+                                    </form>
+                                </td>
+                                <td>
+                                    {% if user.id != request.session.get('user_id') %}
+                                    <form action="/settings/users/{{ user.id }}/delete" method="post"
+                                        data-confirm="Delete user &quot;{{ user.username }}&quot;?"
+                                        data-confirm-detail="This user will no longer be able to log in.">
+                                        <button type="submit" class="btn btn-sm btn-outline-danger">
+                                            <i class="ti ti-trash icon"></i> Delete
+                                        </button>
+                                    </form>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                            {% if not users %}
+                            <tr>
+                                <td colspan="5" class="text-center text-secondary">No users yet</td>
+                            </tr>
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            {# ──────────── Admin / Database tab ──────────── #}
+            {% elif current_tab == 'admin' %}
+
+            <div class="card-body">
+                <h2 class="mb-4">{{ current_tab_label }}</h2>
+                {% if tab_description %}
+                <p class="card-subtitle">{{ tab_description }}</p>
+                {% endif %}
+
+                {# ── Backup ── #}
+                <div class="card mt-3">
+                    <div class="card-header card-header-light">
+                        <div>
+                            <h3 class="card-title">Backup</h3>
+                            <p class="card-subtitle">Download the SQLite database file.</p>
+                        </div>
+                        <div class="card-actions">
+                            <form method="post" action="/settings/admin/backup">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="ti ti-download icon"></i> Download Backup
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="datagrid">
+                            <div class="datagrid-item">
+                                <div class="datagrid-title">File size</div>
+                                <div class="datagrid-content">{{ (admin_info.file_size / 1024)|round(1) }} KB</div>
+                            </div>
+                            <div class="datagrid-item">
+                                <div class="datagrid-title">Last modified</div>
+                                <div class="datagrid-content">{{ admin_info.modified_at|localtime if admin_info.modified_at else '—' }}</div>
+                            </div>
+                            <div class="datagrid-item">
+                                <div class="datagrid-title">Path</div>
+                                <div class="datagrid-content"><code>{{ admin_info.db_path }}</code></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {# ── Selective Purge ── #}
+                <div class="card mt-3">
+                    <div class="card-header card-header-light">
+                        <div>
+                            <h3 class="card-title">Selective Purge</h3>
+                            <p class="card-subtitle">Clear individual tables. This cannot be undone.</p>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table card-table table-vcenter">
+                            <thead>
+                                <tr>
+                                    <th>Table</th>
+                                    <th>Rows</th>
+                                    <th class="w-1"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% set purge_tables = [
+                                    ("barcode_cache", "Barcode Cache", "Cached product lookups from OpenFoodFacts / UPCDatabase"),
+                                    ("barcode_mappings", "Barcode Mappings", "Links between barcodes and Mealie food items"),
+                                    ("items", "Items", "Synced Mealie food catalog (also removes mappings)"),
+                                    ("activities", "Activity Log", "Scan events, notifications, and system log entries"),
+                                    ("retry_queue", "Retry Queue", "Failed requests waiting to be retried"),
+                                ] %}
+                                {% for key, label, desc in purge_tables %}
+                                <tr>
+                                    <td>
+                                        <div>{{ label }}</div>
+                                        <div class="text-secondary small">{{ desc }}</div>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-secondary-lt">{{ admin_info.tables[key] }}</span>
+                                    </td>
+                                    <td>
+                                        <button type="button" class="btn btn-sm btn-outline-warning"
+                                            data-confirm-post="/settings/admin/purge/{{ key }}"
+                                            data-confirm-msg="Purge {{ label }}?"
+                                            data-confirm-detail="This will delete all {{ admin_info.tables[key] }} rows from {{ label }}. This cannot be undone."
+                                            {% if admin_info.tables[key] == 0 %}disabled{% endif %}>
+                                            <i class="ti ti-eraser icon"></i> Purge
+                                        </button>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                {# ── Danger Zone ── #}
+                <div class="card mt-3 border-danger">
+                    <div class="card-header card-header-light">
+                        <div>
+                            <h3 class="card-title text-danger">Danger Zone</h3>
+                            <p class="card-subtitle">Irreversible actions that affect all data.</p>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-12 d-flex align-items-center justify-content-between">
+                                <div>
+                                    <strong>Reset Data</strong>
+                                    <p class="text-secondary mb-0 small">Delete all barcodes, items, mappings, activity log, and retry queue. Keeps API tokens.</p>
+                                </div>
+                                <button type="button" class="btn btn-outline-danger ms-3"
+                                    data-confirm-post="/settings/admin/reset"
+                                    data-confirm-msg="Reset all data?"
+                                    data-confirm-detail="This will delete all application data. API tokens will be preserved. This cannot be undone.">
+                                    <i class="ti ti-trash icon"></i> Reset Data
+                                </button>
+                            </div>
+                            <div class="col-12"><hr class="my-0"></div>
+                            <div class="col-12 d-flex align-items-center justify-content-between">
+                                <div>
+                                    <strong>Factory Reset</strong>
+                                    <p class="text-secondary mb-0 small">Delete everything including API tokens. Scanners will need to be re-authenticated.</p>
+                                </div>
+                                <button type="button" class="btn btn-danger ms-3"
+                                    data-confirm-post="/settings/admin/factory-reset"
+                                    data-confirm-msg="Factory reset?"
+                                    data-confirm-detail="This will delete ALL data including API tokens. Any connected scanners will stop working. This cannot be undone.">
+                                    <i class="ti ti-alert-triangle icon"></i> Factory Reset
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {% endif %}
+
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/settings-page.js?v={{ v }}"></script>
+{% endblock %}

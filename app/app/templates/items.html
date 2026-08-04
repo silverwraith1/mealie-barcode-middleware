@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Items — Mealie Barcode Middleware{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+    <div class="row g-2 align-items-center">
+        <div class="col">
+            <h2 class="page-title">Items</h2>
+        </div>
+        <div class="col-auto ms-auto d-print-none">
+            <a href="#" class="btn btn-primary d-none d-sm-inline-block" data-bs-toggle="modal" data-bs-target="#modal-add-item">
+                <i class="ti ti-plus icon"></i>
+                Add item
+            </a>
+            <a href="#" class="btn btn-primary d-sm-none btn-icon" data-bs-toggle="modal" data-bs-target="#modal-add-item" aria-label="Add item">
+                <i class="ti ti-plus icon"></i>
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Add item modal -->
+<div class="modal modal-blur fade" id="modal-add-item" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content">
+            <form method="post" action="/items/add">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add Custom Item</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-secondary">Create an item manually. It won't be linked to Mealie.</p>
+                    <div>
+                        <label class="form-label" for="item-name">Item name</label>
+                        <input type="text" name="name" id="item-name" class="form-control" placeholder="e.g. Fairy Dish Soap" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn me-auto" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="ti ti-plus icon"></i>
+                        Add item
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="row w-100">
+            <div class="col">
+                <h3 class="card-title mb-0">{{ items|length }} item{{ 's' if items|length != 1 }}</h3>
+                <p class="text-secondary m-0">{% if last_synced %}Last Mealie sync {{ last_synced|localtime }}{% else %}Not synced yet{% endif %}</p>
+            </div>
+            <div class="col-md-auto col-sm-12">
+                <div class="ms-auto d-flex flex-wrap btn-list">
+                    <div class="input-group input-group-flat w-auto">
+                        <span class="input-group-text">
+                            <i class="ti ti-search icon icon-1" aria-hidden="true"></i>
+                        </span>
+                        <input id="items-table-search" type="text" class="form-control" placeholder="Filter…" autocomplete="off" value="{{ search_query }}">
+                    </div>
+                    <form method="post" action="/items/sync">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="ti ti-refresh icon" aria-hidden="true"></i>
+                            Sync Mealie
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="items-table-container">
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table" id="items-table">
+                <thead>
+                    <tr>
+                        <th>
+                            <button class="table-sort d-flex justify-content-between active asc" data-sort="sort-name">Name</button>
+                        </th>
+                        <th>
+                            <button class="table-sort d-flex justify-content-between" data-sort="sort-source">Source</button>
+                        </th>
+                        <th>
+                            <button class="table-sort d-flex justify-content-between" data-sort="sort-aliases">Aliases</button>
+                        </th>
+                        <th>
+                            <button class="table-sort d-flex justify-content-between" data-sort="sort-mappings">Linked Barcodes</button>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="table-tbody">
+                    {% for entry in items %}
+                    <tr>
+                        <td class="sort-name"><a href="/items/{{ entry.item.id }}">{{ entry.item.name }}</a></td>
+                        <td class="sort-source">
+                            {% if entry.item.source == 'mealie' %}
+                            <span class="badge bg-blue text-blue-fg">Mealie</span>
+                            {% else %}
+                            <span class="badge bg-purple text-purple-fg">Custom</span>
+                            {% endif %}
+                        </td>
+                        <td class="sort-aliases text-secondary">{{ entry.item.aliases | fromjson | join(', ') if entry.item.aliases else '' }}</td>
+                        <td class="sort-mappings">
+                            {% if entry.mapping_count > 0 %}
+                            <span class="badge bg-green text-green-fg">{{ entry.mapping_count }}</span>
+                            {% else %}
+                            <span class="text-secondary">0</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    {% if not items %}
+                    <tr class="items-empty-row">
+                        <td colspan="4">
+                            <div class="empty py-4">
+                                <div class="empty-icon"><i class="ti ti-apple icon icon-lg"></i></div>
+                                <p class="empty-title">No items yet</p>
+                                <p class="empty-subtitle text-secondary">
+                                    Items are synced from your Mealie food catalog.<br>
+                                    Trigger a sync or add a custom item with the button above.
+                                </p>
+                                <div class="empty-action">
+                                    <form method="post" action="/items/sync" class="d-inline">
+                                        <button type="submit" class="btn btn-primary">
+                                            <i class="ti ti-refresh icon"></i>Sync from Mealie
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+        <div class="card-footer d-flex align-items-center">
+            <div class="dropdown">
+                <a class="btn dropdown-toggle" data-bs-toggle="dropdown">
+                    <span id="page-size-label">20</span>&nbsp;records
+                </a>
+                <div class="dropdown-menu">
+                    <a class="dropdown-item" href="#" data-page-size="10">10 records</a>
+                    <a class="dropdown-item" href="#" data-page-size="20">20 records</a>
+                    <a class="dropdown-item" href="#" data-page-size="50">50 records</a>
+                    <a class="dropdown-item" href="#" data-page-size="100">100 records</a>
+                </div>
+            </div>
+            <ul class="pagination m-0 ms-auto" id="items-pagination"></ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/table.js?v={{ v }}"></script>
+<script src="/static/js/items-page.js?v={{ v }}"></script>
+{% endblock %}

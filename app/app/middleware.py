@@ -1,0 +1,265 @@
+"""Security middleware — headers, CSRF origin check, and session auth."""
+
+import json
+import logging
+import secrets
+from base64 import b64decode, b64encode
+from urllib.parse import quote, urlparse
+
+from itsdangerous.exc import BadSignature
+from starlette.datastructures import MutableHeaders
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import Session, SessionMiddleware
+from starlette.requests import HTTPConnection, Request
+from starlette.responses import RedirectResponse, Response
+from starlette.types import Message, Receive, Scope, Send
+
+logger = logging.getLogger(__name__)
+
+# Safe (read-only) HTTP methods that don't need CSRF protection
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+# Paths exempt from CSRF check (token-authenticated API)
+_CSRF_EXEMPT_PREFIXES = ("/scan", "/scan/app")
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to every response."""
+
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self'; "
+            "connect-src 'self'; "
+            "font-src 'self'; "
+            "img-src 'self' data:; "
+            "worker-src 'self'"
+        )
+
+        return response
+
+
+class CSRFOriginMiddleware(BaseHTTPMiddleware):
+    """
+    CSRF protection via Origin/Referer header validation.
+
+    On state-changing requests (POST, PUT, DELETE, PATCH), verify that
+    the Origin or Referer header matches the request's host. Rejects
+    cross-origin form submissions from attacker sites.
+
+    Exempt: token-authenticated endpoints (/scan).
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method in _SAFE_METHODS:
+            return await call_next(request)
+
+        # Skip CSRF check for token-authenticated API endpoints
+        path = request.url.path
+        for prefix in _CSRF_EXEMPT_PREFIXES:
+            if path.startswith(prefix):
+                return await call_next(request)
+
+        # Determine expected host
+        expected_host = request.headers.get("host", "")
+
+        # Check Origin header first (most reliable)
+        origin = request.headers.get("origin")
+        if origin:
+            parsed = urlparse(origin)
+            if parsed.netloc == expected_host:
+                return await call_next(request)
+            logger.warning(f"CSRF blocked: origin '{origin}' != host '{expected_host}' on {path}")
+            return Response("Forbidden — origin mismatch", status_code=403)
+
+        # Fall back to Referer header
+        referer = request.headers.get("referer")
+        if referer:
+            parsed = urlparse(referer)
+            if parsed.netloc == expected_host:
+                return await call_next(request)
+            logger.warning(f"CSRF blocked: referer '{referer}' != host '{expected_host}' on {path}")
+            return Response("Forbidden — referer mismatch", status_code=403)
+
+        # No Origin or Referer — block (strict mode)
+        # Browsers always send Origin on POST from forms and fetch.
+        # Missing headers typically means non-browser client or privacy stripping.
+        logger.warning(f"CSRF blocked: no origin/referer on {request.method} {path}")
+        return Response("Forbidden — missing origin", status_code=403)
+
+
+# ── Remember-me session middleware ──────────────────────────────────
+
+
+class RememberMeSessionMiddleware(SessionMiddleware):
+    """SessionMiddleware with per-session cookie persistence.
+
+    Without '_remember' in session: session cookie (dies on browser close).
+    With '_remember' in session: persistent cookie (Max-Age from constructor).
+    Signature validation always uses the configured max_age for security.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        connection = HTTPConnection(scope)
+        initial_session_was_empty = True
+
+        if self.session_cookie in connection.cookies:
+            data = connection.cookies[self.session_cookie].encode("utf-8")
+            try:
+                data = self.signer.unsign(data, max_age=self.max_age)
+                scope["session"] = Session(json.loads(b64decode(data)))
+                initial_session_was_empty = False
+            except BadSignature:
+                scope["session"] = Session()
+        else:
+            scope["session"] = Session()
+
+        async def send_wrapper(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                session: Session = scope["session"]
+                headers = MutableHeaders(scope=message)
+                if session.accessed:
+                    headers.add_vary_header("Cookie")
+                if session.modified and session:
+                    data = b64encode(json.dumps(dict(session)).encode("utf-8"))
+                    data = self.signer.sign(data)
+                    # Persistent cookie only if user checked "Remember me"
+                    cookie_max_age = self.max_age if session.get("_remember") else None
+                    header_value = (
+                        "{session_cookie}={data}; path={path}; "
+                        "{max_age}{security_flags}"
+                    ).format(
+                        session_cookie=self.session_cookie,
+                        data=data.decode("utf-8"),
+                        path=self.path,
+                        max_age=f"Max-Age={cookie_max_age}; " if cookie_max_age else "",
+                        security_flags=self.security_flags,
+                    )
+                    headers.append("Set-Cookie", header_value)
+                elif session.modified and not initial_session_was_empty:
+                    header_value = (
+                        "{session_cookie}={data}; path={path}; "
+                        "{expires}{security_flags}"
+                    ).format(
+                        session_cookie=self.session_cookie,
+                        data="null",
+                        path=self.path,
+                        expires="expires=Thu, 01 Jan 1970 00:00:00 GMT; ",
+                        security_flags=self.security_flags,
+                    )
+                    headers.append("Set-Cookie", header_value)
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+# ── Session auth — require login for UI pages ───────────────────────
+
+# Paths that don't require login
+_AUTH_EXEMPT_PREFIXES = (
+    "/login",
+    "/setup",
+    "/static",
+    "/scan",
+    "/health",
+    "/api/docs",
+    "/api/redoc",
+    "/openapi.json",
+    "/theme.css",
+    "/favicon",
+)
+
+
+def _generate_secret_key() -> str:
+    """Generate and persist a secret key for session signing."""
+    from app.config import settings
+    key_file = settings.db_path.rsplit("/", 1)[0] + "/.session_secret"
+    try:
+        with open(key_file) as f:
+            key = f.read().strip()
+            if key:
+                return key
+    except FileNotFoundError:
+        pass
+    key = secrets.token_hex(32)
+    try:
+        with open(key_file, "w") as f:
+            f.write(key)
+    except OSError:
+        pass
+    return key
+
+
+def get_session_secret() -> str:
+    """Return the session signing secret (cached after first call)."""
+    if not hasattr(get_session_secret, "_key"):
+        get_session_secret._key = _generate_secret_key()
+    return get_session_secret._key
+
+
+class LoginRequiredMiddleware(BaseHTTPMiddleware):
+    """Redirect unauthenticated users to /login for UI routes.
+
+    Exempt: scanner API (/scan), static files, health check, login/setup pages.
+
+    On every authenticated request, re-validates the user from the database
+    to detect deleted accounts and privilege changes (admin demotion).
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Skip auth check for exempt paths
+        for prefix in _AUTH_EXEMPT_PREFIXES:
+            if path.startswith(prefix):
+                return await call_next(request)
+
+        from app.database import SessionLocal
+        from app.models import User
+
+        user_id = request.session.get("user_id")
+
+        if user_id:
+            # Re-validate: ensure user still exists and sync privileges
+            db = SessionLocal()
+            try:
+                user = db.get(User, user_id)
+            finally:
+                db.close()
+
+            if user:
+                # Sync admin flag in case another admin changed it
+                if request.session.get("is_admin") != user.is_admin:
+                    request.session["is_admin"] = user.is_admin
+                return await call_next(request)
+
+            # User was deleted — clear stale session
+            request.session.clear()
+
+        # No valid session — check if first-run setup is needed
+        db = SessionLocal()
+        try:
+            has_users = db.query(User.id).first() is not None
+        finally:
+            db.close()
+
+        if not has_users:
+            return RedirectResponse("/setup", status_code=303)
+
+        # Redirect to login with return URL
+        next_url = quote(str(request.url.path), safe="/:@!$&'()*+,;=-._~")
+        qs = str(request.url.query)
+        if qs:
+            next_url += "?" + qs
+        return RedirectResponse(f"/login?next={quote(next_url, safe='')}", status_code=303)

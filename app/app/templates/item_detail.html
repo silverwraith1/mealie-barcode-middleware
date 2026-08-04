@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} — Mealie Barcode Middleware{% endblock %}
+
+{% block content %}
+<div class="page-header d-print-none mb-3">
+    <div class="row g-2 align-items-center">
+        <div class="col">
+            <div class="page-pretitle">{% if item.source == 'mealie' %}Synced from Mealie{% else %}Manual item{% endif %}</div>
+            <h2 class="page-title">{{ item.name }}</h2>
+        </div>
+        {% if item.source == 'manual' %}
+        <div class="col-auto">
+            <form method="post" action="/items/{{ item.id }}/delete"
+                data-confirm="Delete &quot;{{ item.name }}&quot;?"
+                data-confirm-detail="This item and all its barcode mappings will be permanently removed.">
+                <button type="submit" class="btn btn-outline-danger">
+                    <i class="ti ti-trash icon"></i> Delete Item
+                </button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Item info -->
+<div class="card mb-3">
+    <div class="card-header"><h3 class="card-title">Details</h3></div>
+    <div class="card-body">
+        <div class="datagrid">
+            <div class="datagrid-item">
+                <div class="datagrid-title">ID</div>
+                <div class="datagrid-content"><code>{{ item.id }}</code></div>
+            </div>
+            <div class="datagrid-item">
+                <div class="datagrid-title">Name</div>
+                <div class="datagrid-content">{{ item.name }}</div>
+            </div>
+            <div class="datagrid-item">
+                <div class="datagrid-title">Source</div>
+                <div class="datagrid-content">
+                    {% if item.source == 'mealie' %}
+                    <span class="badge bg-blue text-blue-fg">Mealie</span>
+                    {% else %}
+                    <span class="badge bg-purple text-purple-fg">Custom</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="datagrid-item">
+                <div class="datagrid-title">Aliases</div>
+                <div class="datagrid-content">
+                    {% set alias_list = item.aliases | default('[]') | fromjson %}
+                    {% if alias_list %}
+                        {% for a in alias_list %}
+                        <span class="badge bg-muted-lt me-1">{{ a }}</span>
+                        {% endfor %}
+                    {% else %}
+                        <span class="text-secondary">None</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% if item.synced_at %}
+            <div class="datagrid-item">
+                <div class="datagrid-title">Last Synced</div>
+                <div class="datagrid-content">{{ item.synced_at|localtime }}</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Mapped barcodes -->
+<div class="card">
+    <div class="card-header"><h3 class="card-title">Linked Barcodes</h3></div>
+    <div class="table-responsive">
+        <table class="table table-vcenter card-table">
+            <thead>
+                <tr>
+                    <th>Barcode</th>
+                    <th>Title</th>
+                    <th>Source</th>
+                    <th>Link</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in mapped_items %}
+                <tr>
+                    <td><a href="/barcodes/{{ entry.mapping.barcode|urlencode }}">{{ entry.mapping.barcode }}</a></td>
+                    <td>{{ entry.barcode.title if entry.barcode else "—" }}</td>
+                    <td>{{ entry.barcode.source if entry.barcode else "—" }}</td>
+                    <td>
+                        {% if entry.mapping.mapped_by == 'auto' %}
+                        <span class="badge bg-yellow text-yellow-fg">Auto</span>
+                        {% elif entry.mapping.mapped_by == 'manual' %}
+                        <span class="badge bg-blue text-blue-fg">Manual</span>
+                        {% elif entry.mapping.mapped_by == 'auto_confirmed' %}
+                        <span class="badge bg-green text-green-fg">Confirmed</span>
+                        {% else %}
+                        <span class="badge bg-secondary">{{ entry.mapping.mapped_by }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="/items/{{ item.id }}/remove-mapping/{{ entry.mapping.barcode }}">
+                            <button type="submit" class="btn btn-sm btn-outline-danger">
+                                <i class="ti ti-unlink icon"></i> Unlink
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not mapped_items %}
+                <tr><td colspan="5" class="text-center text-secondary">No barcodes linked to this item</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

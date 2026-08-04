@@ -1,0 +1,15 @@
+services:
+  mealie-barcode-middleware:
+    container_name: mealie-barcode-middleware
+    build: .
+    restart: unless-stopped
+    ports:
+      - 9930:8000
+    env_file:
+      - .env
+    volumes:
+      - middleware_data:/data
+volumes:
+  middleware_data:
+    driver: local
+networks: {}
